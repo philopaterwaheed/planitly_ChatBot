@@ -15,8 +15,6 @@ def search_milvus(query_text):
         limit=3
     )
 
-    print(search_results)
-    print ([hit["entity"]["text"] for hit in search_results[0]])
     retrieved_info = [hit["entity"]["text"] for hit in search_results[0]]
     return retrieved_info
 
