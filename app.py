@@ -1,110 +1,76 @@
 import ollama
+import sys
+from functools import lru_cache
+from fastapi import FastAPI, HTTPException
 from pymilvus import MilvusClient
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel
 
+# Append custom C++ module path
+sys.path.append(r"cpp_db_saver.pyd")
+import cpp_db_saver  # Assuming this is a valid Python C++ extension
+
+# Initialize FastAPI app
+app = FastAPI()
+
+# Milvus and Async MongoDB Clients
 milvus_client = MilvusClient(uri="http://localhost:19530")
 collection_name = "AI_info"
 
+mongo_client = AsyncIOMotorClient("mongodb://localhost:27017/")
+db = mongo_client["planitly"]
+messages_collection = db["AI_message"]
 
-def search_milvus(query_text):
-    query_vector =  ollama.embeddings(model="nomic-embed-text", prompt=query_text).embedding
 
+# Request Model
+class ChatRequest(BaseModel):
+    message: str
+
+
+# Caching Milvus search results
+@lru_cache(maxsize=100)
+def search_milvus(query_text: str):
+    query_vector = ollama.embeddings(model="nomic-embed-text", prompt=query_text).embedding
     search_results = milvus_client.search(
-        collection_name,
-        data=[query_vector],
-        output_fields=["text"],
-        limit=3
+        collection_name, data=[query_vector], output_fields=["text"], limit=3
+    )
+    return [hit["entity"]["text"] for hit in search_results[0]]
+
+
+# Async function to save message to MongoDB
+async def save_message(message: str, response: str):
+    doc = {"user_message": message, "ai_response": response}
+    await messages_collection.insert_one(doc)  # Non-blocking insert
+
+
+# Async AI chat function
+async def ask_ai(message: str) -> str:
+    retrieved_data = search_milvus(message)
+    system_message = "\n".join(retrieved_data) if retrieved_data else ""
+
+    response = await ollama.chat(
+        model='llama3.1',
+        messages=[
+            {'role': 'system', 'content': system_message},
+            {'role': 'user', 'content': message}
+        ]
     )
 
-    retrieved_info = [hit["entity"]["text"] for hit in search_results[0]]
-    return retrieved_info
+    ai_response = response['message']['content']
 
-# User message
-message = "hello what is your name?"
+    # Save response to MongoDB asynchronously
+    await save_message(message, ai_response)
 
-retrieved_data = search_milvus(message)
-system_message = ""
-if retrieved_data:
-    system_message += "Here is some extra knowledge that may help you:\n"
-    system_message += "\n".join(retrieved_data)
-response = ollama.chat(
-    model='llama3.1',
-    messages=[
-        {'role': 'system', 'content': system_message},
-        {'role': 'user', 'content': message}
-    ]
-)
-
-# Print AI response
-print(response['message']['content'])
-
-#
-# client.create_collection(
-#     collection_name="AI_info",
-#     dimension=768  # The vectors we will use in this demo has 768 dimensions
-# )
-
-# print(client.get_collection_stats("AI_info"))
+    return ai_response
 
 
-# client.get_collection_stats
-# docs = [
-#     "Artificial intelligence was founded as an academic discipline in 1956.",
-#     "Alan Turing was the first person to conduct substantial research in AI.",
-#     "Born in Maida Vale, London, Turing was raised in southern England.",
-# ]
-#
-# vectors = [[ np.random.uniform(-1, 1) for _ in range(384) ] for _ in range(len(docs)) ]
-# data = [ {"id": i, "vector": vectors[i], "text": docs[i], "subject": "history"}
-#          for i in range(len(vectors)) ]
-# res = client.insert(
-#     collection_name="demo_collection",
-#     data=data
-# )
-#
-# # noinspection PyRedeclaration
-# res = client.search(
-#     collection_name="demo_collection",
-#     data=[vectors[0]],
-#     filter="subject == 'history'",
-#     limit=2,
-#     output_fields=["text", "subject"],
-# )
-# print(res)
-#
-# res = client.query(
-#     collection_name="demo_collection",
-#     filter="subject == 'history'",
-#     output_fields=["text", "subject"],
-# )
-# print(res)
-# #
-# res = client.delete(
-#     collection_name="AI_info",
-#     filter="subject == 'self'",
-# )
-# # print(res)
-#
-# import ollama
-# import torch
-#
-# # Get embedding for given texts
-# text = "my parents named me love ; philo means love in roman"
-# # text1 = "Philo adores apples."
-# text1 = "my name is Philo"
-#
-# # Fetch embeddings from Ollama
-# response = ollama.embeddings(model="nomic-embed-text", prompt=text)
-# response1 = ollama.embeddings(model="nomic-embed-text", prompt=text1)
-#
-# # Extract embeddings from response dictionary
-# embedding1 = torch.tensor(response["embedding"])  # Convert to tensor
-# embedding2 = torch.tensor(response1["embedding"])  # Convert to tensor
-#
-# # Compute cosine similarity
-# similarity = torch.nn.functional.cosine_similarity(embedding1, embedding2, dim=0)
-#
-# # Print results
-# print(f"Similarity Score: {similarity.item():.4f}")
-# print("Embedding Sample:", embedding1[:5])  # Print first 5 elements
-# https://robkerr.ai/chunking-text-into-vector-databases/
+# API Route for Chat
+@app.post('/chat')
+async def chat(request: ChatRequest):
+    if not request.message:
+        raise HTTPException(status_code=400, detail="No message provided")
 
+    ai_response = await ask_ai(request.message)
+    return {"message": ai_response}
+
+# Run with: uvicorn filename:app --reload
