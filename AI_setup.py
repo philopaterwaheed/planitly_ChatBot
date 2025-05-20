@@ -21,16 +21,20 @@ def store_ai_info(info_id, text, subject):
     print(res)
 # Check if the collection exists
 if client.has_collection(collection_name):
-    client.delete(collection_name, filter="id >= 0")
+    client.drop_collection(collection_name)
+    client.create_collection(
+        collection_name=collection_name,
+        dimension=768  # The vectors we will use in this demo has 768 dimensions
+    )
     for index, info in enumerate(data):
-        store_ai_info(index,info["text"],info["subject"])
+        store_ai_info(index, info["text"], info["subject"])
 else:
     print(f"Collection '{collection_name}' does not exist.")
     client.create_collection(
-         collection_name=collection_name,
-         dimension=768  # The vectors we will use in this demo has 768 dimensions
-     )
-    for index, info in data:
-        store_ai_info(index,info["text"],info["subject"])
+        collection_name=collection_name,
+        dimension=768
+    )
+    for index, info in enumerate(data):
+        store_ai_info(index, info["text"], info["subject"])
 client.flush(collection_name)
 print(client.get_collection_stats(collection_name))
