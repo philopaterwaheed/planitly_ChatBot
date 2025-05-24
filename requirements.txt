@@ -5,3 +5,5 @@ fastapi
 motor
 pydantic
 uvicorn
+spacy
+sentence-transformers
