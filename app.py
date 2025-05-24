@@ -87,45 +87,43 @@ async def call_gemini_api(apikey, content):
 
 # Caching Milvus search results
 @lru_cache(maxsize=100)
-def search_milvus(query_text: str):
+def search_milvus(query_text: str, user_id: str):
     milvus_client.load_collection(collection_name)
     query_vector = ollama.embeddings(model="nomic-embed-text", prompt=query_text).embedding
     search_results = milvus_client.search(
         collection_name,
         data=[query_vector],
         output_fields=["user_message"],
-        limit=3
+        limit=3,
+        filter=f"user_id == '{user_id}'"  
     )
     # Include the score (heat) in the result
     return [
         {
             "user_message": hit["user_message"],
-            "heat": hit.get("score", hit.get("distance", 0))  # Use score or distance
+            "heat": hit.get("score", hit.get("distance", 0))
         }
         for hit in search_results[0]
     ]
 
-# Save message using MongoEngine (sync, but can be run in threadpool if needed)
-def save_message(message: str, response: str):
-    AIMessage(user_message=message, ai_response=response).save()
+def save_message(message: str, response: str, user_id: str):
+    AIMessage(user_message=message, ai_response=response, user_id=user_id).save()
 
-def save_message_to_milvus(user_message: str, ai_response: str):
-    # Create embedding for the user message
+def save_message_to_milvus(user_message: str, ai_response: str, user_id: str):
     embedding = ollama.embeddings(model="nomic-embed-text", prompt=user_message).embedding
     milvus_client.insert(
         collection_name,
         data={
             "user_message": user_message,
-            "vector": embedding
+            "vector": embedding,
+            "user_id": user_id
         }
     )
 
 # Async AI chat function
-async def ask_ai(message: str) -> str:
-    retrieved_data = search_milvus(message)
-
-    # Get the last 10 messages from MongoDB, most recent last
-    last_messages = list(AIMessage.objects.order_by('-created_at').limit(10))
+async def ask_ai(message: str, user_id: str) -> str:
+    retrieved_data = search_milvus(message, user_id)
+    last_messages = list(AIMessage.objects(user_id=user_id).order_by('-created_at').limit(10))
 
     # Format chat history efficiently for context
     chat_history = ""
@@ -181,17 +179,16 @@ async def ask_ai(message: str) -> str:
 
     ai_response = await call_gemini_api(API_KEY, content)
 
-    save_message(message, ai_response)
-    save_message_to_milvus(message, ai_response) 
-
+    save_message(message, ai_response, user_id)
+    save_message_to_milvus(message, ai_response, user_id)
     return ai_response
+
 # API Route for Chat
 @app.post('/chat')
 async def chat(request: ChatRequest):
-    if not request.message:
-        raise HTTPException(status_code=400, detail="No message provided")
-
-    ai_response = await ask_ai(request.message)
+    if not request.message or not request.user_id:
+        raise HTTPException(status_code=400, detail="No message or user_id provided")
+    ai_response = await ask_ai(request.message, request.user_id)
     return {"message": ai_response}
 
 # Run with: uvicorn filename:app --reload

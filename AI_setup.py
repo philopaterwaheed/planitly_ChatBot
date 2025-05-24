@@ -63,6 +63,7 @@ user_fields = [
     FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
     FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=768),
     FieldSchema(name="user_message", dtype=DataType.VARCHAR, max_length=1024),
+    FieldSchema(name="user_id", dtype=DataType.VARCHAR, max_length=128),
 ]
 user_schema = CollectionSchema(fields=user_fields, description="User chat history with auto id")
 
