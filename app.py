@@ -13,6 +13,8 @@ import datetime
 import uuid
 import re
 import numpy as np
+from typing import List, Dict, Any, Optional
+from consts import available_functions
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
@@ -32,6 +34,7 @@ collection_name = "user_info"
 class ChatRequest(BaseModel):
     message: str
     user_id: str
+    available_functions: Optional[List[Dict[str, Any]]] = []
 
 # MongoEngine Document for messages
 class AIMessage(Document):
@@ -297,8 +300,77 @@ async def get_user_name(user_id: str) -> str:
         print(f"Error fetching user name: {e}")
         return None
 
-# Async AI chat function
-async def ask_ai(message: str, user_id: str) -> str:
+# Add function to parse function calls from AI response
+def parse_function_calls(ai_response: str) -> List[Dict[str, Any]]:
+    """
+    Parse function calls from AI response in format:
+    <<FUNCTION_CALL: function_name | parameters: {"param1": "value1", "param2": "value2"}>>
+    """
+    function_calls = []
+    
+    # Pattern to match function calls
+    pattern = r"<<FUNCTION_CALL:\s*(.*?)\s*\|\s*parameters:\s*({.*?})>>"
+    matches = re.findall(pattern, ai_response, re.DOTALL | re.IGNORECASE)
+    
+    for match in matches:
+        function_name = match[0].strip()
+        try:
+            parameters = json.loads(match[1])
+            function_calls.append({
+                "function_name": function_name,
+                "parameters": parameters
+            })
+            print(f"Parsed function call: {function_name} with parameters: {parameters}")
+        except json.JSONDecodeError as e:
+            print(f"Error parsing function parameters: {e}")
+            continue
+    
+    return function_calls
+
+# Update the format_functions_for_ai function to handle your parameter structure
+def format_functions_for_ai(functions: List[Dict[str, Any]]) -> str:
+    """
+    Format available functions for AI context
+    """
+    if not functions:
+        return ""
+    
+    function_descriptions = []
+    for func in functions:
+        func_desc = f"- {func.get('name', 'unknown')}: {func.get('description', 'No description')}"
+        
+        # Add parameters info if available - updated for your structure
+        if 'parameters' in func:
+            params = func['parameters']
+            param_list = []
+            
+            # Handle your parameter structure (dict with param_name: description)
+            for param_name, param_desc in params.items():
+                # Check if description contains type and requirement info
+                if "(required)" in param_desc.lower():
+                    req_str = " (required)"
+                    param_desc = param_desc.replace("(required)", "").strip()
+                elif "(optional)" in param_desc.lower():
+                    req_str = " (optional)"
+                    param_desc = param_desc.replace("(optional)", "").strip()
+                else:
+                    req_str = ""
+                
+                param_list.append(f"{param_name}{req_str}: {param_desc}")
+            
+            if param_list:
+                func_desc += f"\n  Parameters: {'; '.join(param_list)}"
+        
+        function_descriptions.append(func_desc)
+    
+    return "\n".join(function_descriptions)
+
+# Update the ask_ai function
+async def ask_ai(message: str, user_id: str, available_functions: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+    # Use functions from consts if none provided
+    if available_functions is None:
+        available_functions = available_functions
+    
     user_name = await get_user_name(user_id)
     
     retrieved_data = search_milvus(message, user_id)
@@ -324,6 +396,27 @@ async def ask_ai(message: str, user_id: str) -> str:
     # Add personalized greeting if name is available
     if user_name:
         instructions += f"The user's name is {user_name}. You can address them by name when appropriate.\n\n"
+    
+    # Add function calling instructions if functions are available
+    if available_functions:
+        function_list = format_functions_for_ai(available_functions)
+        instructions += (
+            "Function Calling Instructions:\n"
+            "You have access to the following functions that you can call when appropriate:\n"
+            f"{function_list}\n\n"
+            "To call a function, use this exact format:\n"
+            "<<FUNCTION_CALL: function_name | parameters: {\"param1\": \"value1\", \"param2\": \"value2\"}>>\n"
+            "Only call functions when the user's request clearly requires that specific functionality. "
+            "Do not call functions unnecessarily. You can call multiple functions if needed.\n"
+            "Always provide a natural response to the user along with any function calls.\n\n"
+            
+            "Function Usage Guidelines:\n"
+            "- create_subject: Use when user wants to create/add a new subject/area of life\n"
+            "- add_component_to_subject: Use when user wants to add attributes/properties to an existing subject\n"
+            "- create_connection: Use when user wants to link two subjects or create relationships\n"
+            "- create_category: Use when user wants to organize subjects into categories\n"
+            "- create_data_transfer: Use when user wants to set up data flow between components\n\n"
+        )
     
     instructions += (
         "Context about this application:\n"
@@ -380,6 +473,9 @@ async def ask_ai(message: str, user_id: str) -> str:
 
     ai_response = await call_gemini_api(API_KEY, content)
 
+    # Parse function calls from AI response
+    function_calls = parse_function_calls(ai_response)
+
     # Check for resolved marker (conflict resolution)
     resolved_match = re.search(
         r"<<RESOLVED:\s*(.*?)\s*\|\s*CONFLICTS_WITH:\s*(.*?)\s*\|\s*category:\s*(.*?)>>",
@@ -408,15 +504,29 @@ async def ask_ai(message: str, user_id: str) -> str:
 
     # Remove the markers from the response shown to the user
     ai_response_clean = re.sub(r"<<STORE:.*?>>", "", ai_response, flags=re.DOTALL)
-    ai_response_clean = re.sub(r"<<RESOLVED:.*?>>", "", ai_response_clean, flags=re.DOTALL).strip()
-    return ai_response_clean
+    ai_response_clean = re.sub(r"<<RESOLVED:.*?>>", "", ai_response_clean, flags=re.DOTALL)
+    ai_response_clean = re.sub(r"<<FUNCTION_CALL:.*?>>", "", ai_response_clean, flags=re.DOTALL)
+    ai_response_clean = ai_response_clean.strip()
+    
+    return {
+        "message": ai_response_clean,
+        "function_calls": function_calls
+    }
 
 # API Route for Chat
 @app.post('/chat')
 async def chat(request: ChatRequest):
     if not request.message or not request.user_id:
         raise HTTPException(status_code=400, detail="No message or user_id provided")
-    ai_response = await ask_ai(request.message, request.user_id)
-    return {"message": ai_response}
+    
+    # Use functions from request or fall back to consts
+    functions_to_use = request.available_functions if request.available_functions else available_functions
+    
+    result = await ask_ai(request.message, request.user_id, functions_to_use)
+    
+    return {
+        "message": result["message"],
+        "function_calls": result.get("function_calls", [])
+    }
 
 # Run with: uvicorn app:app --reload
