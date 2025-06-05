@@ -35,6 +35,12 @@ class ChatRequest(BaseModel):
     message: str
     user_id: str
     available_functions: Optional[List[Dict[str, Any]]] = []
+    ai_accessible_subjects: Optional[List[Dict[str, Any]]] = []
+    not_done_connections: Optional[List[Dict[str, Any]]] = []
+    custom_templates: Optional[List[Dict[str, Any]]] = []
+    all_templates: Optional[List[Dict[str, Any]]] = []
+    all_subjects_info: Optional[List[Dict[str, Any]]] = []
+    categories: Optional[List[Dict[str, Any]]] = []
 
 # MongoEngine Document for messages
 class AIMessage(Document):
@@ -366,10 +372,22 @@ def format_functions_for_ai(functions: List[Dict[str, Any]]) -> str:
     return "\n".join(function_descriptions)
 
 # Update the ask_ai function
-async def ask_ai(message: str, user_id: str, available_functions: List[Dict[str, Any]] = None) -> Dict[str, Any]:
-    # Use functions from consts if none provided
-    if available_functions is None:
-        available_functions = available_functions
+async def ask_ai(
+    message: str, 
+    user_id: str, 
+    available_functions_param: List[Dict[str, Any]] = None,
+    ai_accessible_subjects: List[Dict[str, Any]] = None,
+    not_done_connections: List[Dict[str, Any]] = None,
+    custom_templates: List[Dict[str, Any]] = None,
+    all_templates: List[Dict[str, Any]] = None,
+    all_subjects_info: List[Dict[str, Any]] = None,
+    categories: List[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    # Use functions from consts if none provided, fix variable name conflict
+    if available_functions_param is None:
+        functions_to_use = available_functions
+    else:
+        functions_to_use = available_functions_param
     
     user_name = await get_user_name(user_id)
     
@@ -397,9 +415,88 @@ async def ask_ai(message: str, user_id: str, available_functions: List[Dict[str,
     if user_name:
         instructions += f"The user's name is {user_name}. You can address them by name when appropriate.\n\n"
     
+    # Add current system state context
+    if ai_accessible_subjects or all_subjects_info or categories or not_done_connections or custom_templates or all_templates:
+        instructions += (
+            "Current System State Information:\n"
+            "You have access to the user's current data in the Planitly system. Use this information to provide context-aware responses and make intelligent function calls.\n\n"
+        )
+        
+        # Add AI accessible subjects context
+        if ai_accessible_subjects:
+            instructions += (
+                "AI-Accessible Subjects (subjects you can read and modify):\n"
+                f"You have access to {len(ai_accessible_subjects)} subjects with their complete data including components and widgets. "
+                "Use this data to answer questions about the user's current state, provide insights, and make informed suggestions.\n"
+            )
+            for subject in ai_accessible_subjects[:5]:  # Show first 5 subjects as examples
+                subject_name = subject.get('name', 'Unknown')
+                components_count = len(subject.get('components', []))
+                widgets_count = len(subject.get('widgets', []))
+                instructions += f"- {subject_name}: {components_count} components, {widgets_count} widgets\n"
+            if len(ai_accessible_subjects) > 5:
+                instructions += f"... and {len(ai_accessible_subjects) - 5} more subjects\n"
+            instructions += "\n"
+        
+        # Add all subjects overview
+        if all_subjects_info:
+            instructions += (
+                f"All User Subjects Overview ({len(all_subjects_info)} total):\n"
+                "This includes all subjects in the user's system (both AI-accessible and restricted). "
+                "Use this for general awareness and to suggest connections or improvements.\n"
+            )
+            for subject in all_subjects_info[:3]:  # Show first 3 as examples
+                subject_name = subject.get('name', 'Unknown')
+                category = subject.get('category', 'Uncategorized')
+                instructions += f"- {subject_name} (Category: {category})\n"
+            if len(all_subjects_info) > 3:
+                instructions += f"... and {len(all_subjects_info) - 3} more subjects\n"
+            instructions += "\n"
+        
+        # Add categories context
+        if categories:
+            category_names = [cat.get('name', 'Unknown') for cat in categories]
+            instructions += (
+                f"Available Categories: {', '.join(category_names)}\n"
+                "Use these categories when creating new subjects or organizing existing ones.\n\n"
+            )
+        
+        # Add connections context
+        if not_done_connections:
+            instructions += (
+                f"Active/Pending Connections ({len(not_done_connections)}):\n"
+                "These are connections that are not yet completed. You can reference these when discussing workflows or suggesting improvements.\n"
+            )
+            for conn in not_done_connections[:3]:  # Show first 3 as examples
+                conn_type = conn.get('type', 'manual')
+                from_subject = conn.get('from_subject_name', 'Unknown')
+                to_subject = conn.get('to_subject_name', 'Unknown')
+                instructions += f"- {from_subject} → {to_subject} ({conn_type})\n"
+            if len(not_done_connections) > 3:
+                instructions += f"... and {len(not_done_connections) - 3} more connections\n"
+            instructions += "\n"
+        
+        # Add templates context
+        if all_templates:
+            template_names = [tmpl.get('name', 'Unknown') for tmpl in all_templates]
+            instructions += (
+                f"Available Templates: {', '.join(template_names[:5])}\n"
+                "You can suggest using these templates when creating new subjects.\n"
+            )
+            if len(template_names) > 5:
+                instructions += f"... and {len(template_names) - 5} more templates\n"
+            instructions += "\n"
+        
+        if custom_templates:
+            custom_names = [tmpl.get('name', 'Unknown') for tmpl in custom_templates]
+            instructions += (
+                f"User's Custom Templates: {', '.join(custom_names)}\n"
+                "These are templates the user has created and can be reused for similar subjects.\n\n"
+            )
+    
     # Add function calling instructions if functions are available
-    if available_functions:
-        function_list = format_functions_for_ai(available_functions)
+    if functions_to_use:
+        function_list = format_functions_for_ai(functions_to_use)
         instructions += (
             "Function Calling Instructions:\n"
             "You have access to the following functions that you can call when appropriate:\n"
@@ -410,12 +507,111 @@ async def ask_ai(message: str, user_id: str, available_functions: List[Dict[str,
             "Do not call functions unnecessarily. You can call multiple functions if needed.\n"
             "Always provide a natural response to the user along with any function calls.\n\n"
             
-            "Function Usage Guidelines:\n"
-            "- create_subject: Use when user wants to create/add a new subject/area of life\n"
-            "- add_component_to_subject: Use when user wants to add attributes/properties to an existing subject\n"
-            "- create_connection: Use when user wants to link two subjects or create relationships\n"
-            "- create_category: Use when user wants to organize subjects into categories\n"
-            "- create_data_transfer: Use when user wants to set up data flow between components\n\n"
+            "Smart Function Usage with System Data:\n"
+            "- When the user asks about existing data, reference the AI-accessible subjects provided\n"
+            "- Use subject IDs from the provided data when calling functions that require them\n"
+            "- When suggesting connections, consider the existing subjects and their relationships\n"
+            "- Reference actual component IDs when creating data transfers\n"
+            "- Suggest appropriate categories from the available list\n"
+            "- Recommend relevant templates based on the user's current subjects\n\n"
+            
+            "Complete Function Categories Available:\n"
+            "**Creation Functions:**\n"
+            "- create_subject: Create new life areas/topics\n"
+            "- add_component_to_subject: Add data attributes to subjects\n"
+            "- create_connection: Link subjects with data flow relationships\n"
+            "- create_category: Organize subjects into categories\n"
+            "- create_data_transfer: Set up automatic data operations between components\n"
+            "- create_widget: Add visual elements (todos, tables, calendars, notes)\n"
+            "- create_custom_template: Create reusable subject templates\n"
+            "- add_todo_to_widget: Add tasks to todo widgets\n\n"
+            
+            "**Data Management Functions:**\n"
+            "- update_component_data: Modify existing component values or names\n"
+            "- get_subject_full_data: Retrieve complete subject information\n\n"
+            
+            "**Deletion Functions:**\n"
+            "- delete_subject: Remove subjects and all their data\n"
+            "- delete_component: Remove components from subjects\n"
+            "- delete_widget: Remove widgets and their data\n"
+            "- delete_connection: Remove subject relationships\n"
+            "- delete_category: Remove categories (subjects become 'Uncategorized')\n"
+            "- delete_data_transfer: Remove automatic data operations\n"
+            "- delete_custom_template: Remove user-created templates\n"
+            "- delete_todo: Remove specific todo items\n"
+            "- delete_notification: Remove system notifications\n\n"
+            
+            "**Access Control Functions:**\n"
+            "- remove_ai_accessible_subject: Remove subjects from AI access list\n\n"
+            
+            "Component Data Types Guide:\n"
+            "When creating components, use these exact type names:\n"
+            "- 'int': For numbers (data: {'item': 123})\n"
+            "- 'str': For text (data: {'item': 'text'})\n"
+            "- 'bool': For true/false (data: {'item': true})\n"
+            "- 'date': For dates (data: {'item': 'ISO_date_string'})\n"
+            "- 'pair': For key-value pairs (data: {'item': {'key': 'string', 'value': any}, 'type': {'key': 'str', 'value': 'any'}})\n"
+            "- 'Array_type': For arrays of integers (data: {'type': 'int'})\n"
+            "- 'Array_generic': For mixed arrays (data: {'type': 'any'})\n"
+            "- 'Array_of_strings': For string arrays (data: {'type': 'str'})\n"
+            "- 'Array_of_booleans': For boolean arrays (data: {'type': 'bool'})\n"
+            "- 'Array_of_dates': For date arrays (data: {'type': 'date'})\n"
+            "- 'Array_of_objects': For object arrays (data: {'type': 'object'})\n"
+            "- 'Array_of_pairs': For pair arrays (data: {'type': {'key': 'str', 'value': 'any'}})\n\n"
+            
+            "Data Transfer System - CRITICAL UNDERSTANDING:\n"
+            "Data transfers are operations that MODIFY the data inside components. They can work in two ways:\n\n"
+            
+            "1. **Component-to-Component Transfer**: Data flows from a source component to target component\n"
+            "   - Use 'source_component_id' parameter\n"
+            "   - The source component's value is used for the operation\n"
+            "   - Example: Transfer mood score from wellness subject to energy component\n\n"
+            
+            "2. **Direct Value Transfer**: A specific value is applied to the target component\n"
+            "   - Use 'data_value' parameter (NO source_component_id)\n"
+            "   - You provide the exact value/operation data\n"
+            "   - Example: Add 10 points to a score, set status to 'completed', append 'new item' to list\n\n"
+            
+            "Data Transfer Operations by Component Type:\n\n"
+            
+            "**Scalar Types (int/str/bool/date):**\n"
+            "- replace: Set new value → data_value: {'item': new_value}\n"
+            "- add (int only): Add to current → data_value: {'item': amount_to_add}\n"
+            "- multiply (int only): Multiply current → data_value: {'item': multiplier}\n"
+            "- toggle (bool only): Flip true/false → data_value: {} (no data needed)\n\n"
+            
+            "**Pair Type:**\n"
+            "- update_key: Change the key → data_value: {'item': {'key': 'new_key'}}\n"
+            "- update_value: Change the value → data_value: {'item': {'value': new_value}}\n\n"
+            
+            "**Array Types (all Array_* types):**\n"
+            "- append: Add to end → data_value: {'item': new_element}\n"
+            "- remove_back: Remove last → data_value: {} (no data needed)\n"
+            "- remove_front: Remove first → data_value: {} (no data needed)\n"
+            "- delete_at: Remove at index → data_value: {'index': position}\n"
+            "- push_at: Insert at index → data_value: {'item': new_element, 'index': position}\n"
+            "- update_at: Change at index → data_value: {'item': new_element, 'index': position}\n\n"
+            
+            "**Array_of_pairs Special:**\n"
+            "- update_pair: Modify pair at index → data_value: {'item': {'key': 'key', 'value': 'value'}, 'index': position}\n\n"
+            
+            "Widget Types Available:\n"
+            "- 'daily_todo': Task management with date organization\n"
+            "- 'table': Structured data display in rows/columns\n"
+            "- 'note': Free-form text notes\n"
+            "- 'calendar': Date/schedule management and visualization\n"
+            "- 'text_field': Simple text input field\n"
+            "- 'component_reference': Display/reference other component data\n\n"
+            
+            "Connection Types:\n"
+            "- 'manual': User-triggered connections (default)\n"
+            "- 'automatic': System-triggered based on conditions\n"
+            "- Connections can include data_transfers array for automatic data flow\n\n"
+            
+            "Template System:\n"
+            "- Built-in templates: Use template name (e.g., 'fitness', 'academic')\n"
+            "- Custom templates: Created by users, reusable across subjects\n"
+            "- Templates define complete subject structure with components and widgets\n\n"
         )
     
     instructions += (
@@ -522,7 +718,17 @@ async def chat(request: ChatRequest):
     # Use functions from request or fall back to consts
     functions_to_use = request.available_functions if request.available_functions else available_functions
     
-    result = await ask_ai(request.message, request.user_id, functions_to_use)
+    result = await ask_ai(
+        message=request.message,
+        user_id=request.user_id,
+        available_functions_param=functions_to_use,
+        ai_accessible_subjects=request.ai_accessible_subjects,
+        not_done_connections=request.not_done_connections,
+        custom_templates=request.custom_templates,
+        all_templates=request.all_templates,
+        all_subjects_info=request.all_subjects_info,
+        categories=request.categories
+    )
     
     return {
         "message": result["message"],
