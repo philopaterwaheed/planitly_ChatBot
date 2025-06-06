@@ -207,46 +207,105 @@ def save_message_to_milvus(user_message: str, ai_response: str, user_id: str, ca
     if not category:
         category = extract_category_from_text(user_message)
 
-    # 1. Check for exact duplicate
-    filter_str = f"user_id == '{user_id}' && category == '{category}'"
-    existing = milvus_client.query(
-        collection_name,
-        filter=filter_str,
-        output_fields=["user_message", "vector"]
-    )
-    for item in existing:
-        # Exact match
-        if item["user_message"] == user_message:
+    # Check for exact duplicate using direct filter (no record loading)
+    filter_str = f"user_id == '{user_id}' && category == '{category}' && user_message == \"{user_message}\""
+    
+    try:
+        # Use query with limit=1 to check if exact duplicate exists
+        existing_check = milvus_client.query(
+            collection_name,
+            filter=filter_str,
+            output_fields=["user_message"],
+            limit=1
+        )
+        
+        if existing_check:
             print("Exact duplicate found in Milvus, skipping insert:", user_message)
             return
+    except Exception as e:
+        print(f"Error checking for duplicates: {e}")
 
-    search_results = milvus_client.search(
-        collection_name,
-        data=[embedding],
-        output_fields=["user_message"],
-        limit=3,
-        filter=filter_str
-    )
-    for hit in search_results[0]:
-        distance = hit.get("score", hit.get("distance", 0))
-        if distance >= 0.85:
-            print(f"Milvus built-in similarity found (cosine={distance:.2f}), skipping insert:", user_message)
-            return
+    # Check for semantic similarity using vector search (limited results)
+    try:
+        search_results = milvus_client.search(
+            collection_name,
+            data=[embedding],
+            output_fields=["user_message", "id"],  # Added id field to get record ID
+            limit=3,  # Only check top 3 most similar
+            filter=f"user_id == '{user_id}' && category == '{category}'"
+        )
+        
+        print(f"\n--- SEMANTIC SIMILARITY CHECK ---")
+        print(f"Checking similarity for: '{user_message}'")
+        print(f"Category: '{category}'")
+        print(f"Found {len(search_results[0])} similar records:")
+        
+        for i, hit in enumerate(search_results[0], 1):
+            distance = hit.get("score", hit.get("distance", 0))
+            stored_message = hit.get("user_message", "")
+            record_id = hit.get("id", "")
+            
+            print(f"  {i}. Similarity: {distance:.4f} | Message: '{stored_message}'")
+            
+            if distance >= 0.85:
+                print(f"     🔄 HIGH SIMILARITY DETECTED (>= 0.85) - REPLACING RECORD")
+                print(f"     Original: '{stored_message}'")
+                print(f"     New:      '{user_message}'")
+                print(f"     Score:    {distance:.4f}")
+                print(f"     Record ID: {record_id}")
+                
+                # Delete the old record and insert the new one
+                try:
+                    # Delete the old record using its ID
+                    delete_filter = f'user_id == "{user_id}" && user_message == "{stored_message}"'
+                    delete_result = milvus_client.delete(collection_name, filter=delete_filter)
+                    print(f"     ✓ Deleted old record: {delete_result}")
+                    
+                    # Insert the new record with updated text and embedding
+                    milvus_client.insert(
+                        collection_name,
+                        data={
+                            "user_message": user_message,  
+                            "vector": embedding,           
+                            "user_id": user_id,
+                            "category": category
+                        }
+                    )
+                    print(f"     ✓ Inserted replacement record: '{user_message}'")
+                    print(f"===================================\n")
+                    return
+                    
+                except Exception as replace_error:
+                    print(f"     ✗ Error replacing record: {replace_error}")
+                    # If replacement fails, continue to regular insert
+                    break
+            else:
+                print(f"     ✓ Similarity below threshold (< 0.85)")
+        
+        print(f"✓ No high similarity found - proceeding with insert")
+        print(f"===================================\n")
+        
+    except Exception as e:
+        print(f"Error checking semantic similarity: {e}")
 
     print(f"Storing - Original: {user_message}")
     print(f"Storing - Processed: {processed_message}")
     print(f"Storing - Category: {category}")
     print("Embedding length (insert):", len(embedding))
     
-    milvus_client.insert(
-        collection_name,
-        data={
-            "user_message": user_message,  
-            "vector": embedding,           
-            "user_id": user_id,
-            "category": category
-        }
-    )
+    try:
+        milvus_client.insert(
+            collection_name,
+            data={
+                "user_message": user_message,  
+                "vector": embedding,           
+                "user_id": user_id,
+                "category": category
+            }
+        )
+        print(f"Successfully stored message in category '{category}'")
+    except Exception as e:
+        print(f"Error inserting to Milvus: {e}")
 
 async def get_user_name(user_id: str) -> str:
     """
@@ -896,93 +955,30 @@ async def ask_ai(
         print(f"Conflicts with: {conflicts_list}")
         print(f"Category: {resolved_category}")
         
-        # Get all existing records first
+        # Delete matching texts directly without fetching records first
         try:
-            search_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}"'
-            existing_records = milvus_client.query(
-                collection_name,
-                filter=search_filter,
-                output_fields=["user_message", "category"]
-            )
+            total_deleted = 0
             
-            print(f"\n=== MILVUS RECORDS DEBUG ===")
-            print(f"Found {len(existing_records)} records in category '{resolved_category}' for user")
-            print(f"Search filter used: {search_filter}")
-            
-            # Print each record with line numbers
-            print(f"\n--- ALL RECORDS IN MILVUS (Category: {resolved_category}) ---")
-            for i, record in enumerate(existing_records, 1):
-                stored_message = record.get("user_message", "")
-                print(f"Line {i}: '{stored_message}'")
-            
-            print(f"\n--- CONFLICTS TO FIND ---")
-            for i, conflict in enumerate(conflicts_list, 1):
-                print(f"Conflict {i}: '{conflict}'")
-            
-            # Collect all records to delete
-            records_to_delete = set()  # Use set to avoid duplicates
-            
-            # Try to match each conflict
-            print(f"\n--- MATCHING PROCESS ---")
+            print(f"\n--- DIRECT DELETION PROCESS ---")
             for conflict_info in conflicts_list:
                 conflict_info = conflict_info.strip()
                 if not conflict_info:
                     continue
                 
-                print(f"\nProcessing conflict: '{conflict_info}'")
-                matches_found = []
+                print(f"Processing conflict: '{conflict_info}'")
                 
-                for record in existing_records:
-                    stored_message = record.get("user_message", "")
-                    should_delete = False
-                    match_type = ""
-                    
-                    # Try exact match first
-                    if stored_message == conflict_info:
-                        should_delete = True
-                        match_type = "EXACT MATCH"
-                        print(f"  ✓ {match_type}: '{stored_message}'")
-                    
-                    # Try partial match (both directions)
-                    elif (conflict_info.lower() in stored_message.lower() or 
-                          stored_message.lower() in conflict_info.lower()):
-                        should_delete = True
-                        match_type = "PARTIAL MATCH"
-                        print(f"  ✓ {match_type}: '{stored_message}'")
-                    
-                    if should_delete:
-                        records_to_delete.add(stored_message)
-                        matches_found.append(f"{match_type}: '{stored_message}'")
-                
-                if not matches_found:
-                    print(f"  ✗ No matches found for: '{conflict_info}'")
-                else:
-                    print(f"  Found {len(matches_found)} matches for '{conflict_info}'")
-            
-            print(f"\n--- RECORDS IDENTIFIED FOR DELETION ---")
-            if records_to_delete:
-                for i, record in enumerate(sorted(records_to_delete), 1):
-                    print(f"DELETE {i}: '{record}'")
-            else:
-                print("No records identified for deletion")
-            
-            # Delete all identified records
-            total_deleted = 0
-            print(f"\n--- DELETION PROCESS ---")
-            for message_to_delete in records_to_delete:
+                # Delete exact matches directly
                 try:
-                    delete_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}" && user_message == "{message_to_delete}"'
-                    print(f"Attempting to delete with filter: {delete_filter}")
-                    result = milvus_client.delete(collection_name, filter=delete_filter)
-                    print(f"✓ Successfully deleted: '{message_to_delete}' - Result: {result}")
+                    exact_delete_filter = f'user_id == "{str(user.id)}" && user_message == "{conflict_info}"'
+                    print(f"Attempting exact delete with filter: {exact_delete_filter}")
+                    result = milvus_client.delete(collection_name, filter=exact_delete_filter)
+                    print(f"✓ Deleted exact matches for '{conflict_info}': {result}")
                     total_deleted += 1
                 except Exception as delete_error:
-                    print(f"✗ Error deleting '{message_to_delete}': {delete_error}")
+                    print(f"✗ Error deleting exact match '{conflict_info}': {delete_error}")
             
             print(f"\n=== DELETION SUMMARY ===")
-            print(f"Total conflicts requested: {len(conflicts_list)}")
-            print(f"Records identified for deletion: {len(records_to_delete)}")
-            print(f"Successfully deleted: {total_deleted}")
+            print(f"Total deletion attempts: {total_deleted} out of {len(conflicts_list)} conflicts")
             print(f"===========================\n")
                     
         except Exception as e:
@@ -998,78 +994,20 @@ async def ask_ai(
         resolved_category = resolved_single_match.group(3).strip() if resolved_single_match.group(3) else extract_category_from_text(resolved_info)
         print("LLM resolved single conflict:", resolved_info, "Conflicts with:", conflicts_with, "Category:", resolved_category)
         
-        # Try to delete the conflicting information
+        # Delete conflicting information directly without fetching
         try:
-            # First, try to find matching records to see what exists
-            search_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}"'
-            existing_records = milvus_client.query(
-                collection_name,
-                filter=search_filter,
-                output_fields=["user_message", "category"]
-            )
-            
-            print(f"\n=== SINGLE CONFLICT DEBUG ===")
-            print(f"Found {len(existing_records)} records in category '{resolved_category}' for user")
-            print(f"Search filter used: {search_filter}")
+            print(f"\n--- DIRECT DELETION PROCESS ---")
             print(f"Looking for conflict: '{conflicts_with}'")
             
-            # Print each record with line numbers
-            print(f"\n--- ALL RECORDS IN MILVUS (Category: {resolved_category}) ---")
-            for i, record in enumerate(existing_records, 1):
-                stored_message = record.get("user_message", "")
-                print(f"Line {i}: '{stored_message}'")
-            
-            # Find matching records
-            print(f"\n--- MATCHING PROCESS ---")
-            records_to_delete = []
-            
-            for record in existing_records:
-                stored_message = record.get("user_message", "")
-                should_delete = False
-                match_type = ""
-                
-                # Try exact match first
-                if stored_message == conflicts_with:
-                    should_delete = True
-                    match_type = "EXACT MATCH"
-                    print(f"  ✓ {match_type}: '{stored_message}'")
-                
-                # Try partial match (both directions) - case insensitive
-                elif (conflicts_with.lower() in stored_message.lower() or 
-                      stored_message.lower() in conflicts_with.lower()):
-                    should_delete = True
-                    match_type = "PARTIAL MATCH"
-                    print(f"  ✓ {match_type}: '{stored_message}'")
-                
-                if should_delete:
-                    records_to_delete.append(stored_message)
-            
-            print(f"\n--- RECORDS IDENTIFIED FOR DELETION ---")
-            if records_to_delete:
-                for i, record in enumerate(records_to_delete, 1):
-                    print(f"DELETE {i}: '{record}'")
-            else:
-                print("No records identified for deletion")
-            
-            # Delete the identified records
-            deleted_count = 0
-            print(f"\n--- DELETION PROCESS ---")
-            for message_to_delete in records_to_delete:
-                try:
-                    delete_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}" && user_message == "{message_to_delete}"'
-                    print(f"Attempting to delete with filter: {delete_filter}")
-                    result = milvus_client.delete(collection_name, filter=delete_filter)
-                    print(f"✓ Successfully deleted: '{message_to_delete}' - Result: {result}")
-                    deleted_count += 1
-                except Exception as delete_error:
-                    print(f"✗ Error deleting '{message_to_delete}': {delete_error}")
+            # Delete exact matches directly
+            exact_delete_filter = f'user_id == "{str(user.id)}" && user_message == "{conflicts_with}"'
+            print(f"Attempting exact delete with filter: {exact_delete_filter}")
+            result = milvus_client.delete(collection_name, filter=exact_delete_filter)
+            print(f"✓ Deleted exact matches for '{conflicts_with}': {result}")
             
             print(f"\n=== DELETION SUMMARY ===")
-            print(f"Conflict to find: '{conflicts_with}'")
-            print(f"Records identified for deletion: {len(records_to_delete)}")
-            print(f"Successfully deleted: {deleted_count}")
-            if deleted_count == 0:
-                print("⚠️  No matching conflicts found to delete")
+            print(f"Conflict processed: '{conflicts_with}'")
+            print(f"Deletion result: {result}")
             print(f"===========================\n")
             
         except Exception as e:
@@ -1086,7 +1024,6 @@ async def ask_ai(
         print("LLM chose to store:", store_info, "Category:", store_category)
         save_message_to_milvus(store_info, ai_response, str(user.id), store_category)
 
-    save_message(message, ai_response, str(user.id))
 
     # Remove the markers from the response shown to the user (updated to handle all markers)
     ai_response_clean = re.sub(r"<<STORE:\s*.*?\s*\|\s*category:\s*.*?>>", "", ai_response, flags=re.DOTALL | re.IGNORECASE)
