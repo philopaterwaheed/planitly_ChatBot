@@ -9,12 +9,12 @@ import json
 from dotenv import load_dotenv
 import os
 from mongoengine import DateTimeField
-import datetime
-import uuid
+from models import AIMessage_db ,User, DataTransfer_db, DataTransfer, Subject_db, Subject, Component_db, Component, Connection_db, Connection, Widget, Widget_db, Todo_db, Todo, Category_db, ArrayItem_db, Arrays, CustomTemplate_db , ChatRequest
 import re
-import numpy as np
 from typing import List, Dict, Any, Optional
 from consts import available_functions
+from utils.fetch import fetch
+from utils.functions import execute_function_call
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
@@ -29,32 +29,6 @@ app = FastAPI()
 # Milvus Client
 milvus_client = MilvusClient(uri="http://localhost:19530")
 collection_name = "user_info"
-
-# Pydantic model for chat request
-class ChatRequest(BaseModel):
-    message: str
-    user_id: str
-    available_functions: Optional[List[Dict[str, Any]]] = []
-    ai_accessible_subjects: Optional[List[Dict[str, Any]]] = []
-    not_done_connections: Optional[List[Dict[str, Any]]] = []
-    custom_templates: Optional[List[Dict[str, Any]]] = []
-    all_templates: Optional[List[Dict[str, Any]]] = []
-    all_subjects_info: Optional[List[Dict[str, Any]]] = []
-    categories: Optional[List[Dict[str, Any]]] = []
-
-# MongoEngine Document for messages
-class AIMessage(Document):
-    user_message = StringField(required=True)
-    ai_response = StringField(required=True)
-    user_id = StringField(required=True)
-    created_at = DateTimeField(default=datetime.datetime.utcnow)
-    meta = {
-        'collection': 'ai_messages',
-        'indexes': [
-            {'fields': ['created_at'], 'expireAfterSeconds': 60 * 60 * 24 * 7},  # 7 days
-            {'fields': ['user_id']}, 
-        ]
-    }
 
 async def call_gemini_api(apikey, content):
     try:
@@ -224,7 +198,7 @@ def search_milvus(query_text: str, user_id: str, category: str = None):
     return enhanced_results[:10]
 
 def save_message(message: str, response: str, user_id: str):
-    AIMessage(user_message=message, ai_response=response, user_id=user_id).save()
+    AIMessage_db(user_message=message, ai_response=response, user_id=user_id).save()
 
 def save_message_to_milvus(user_message: str, ai_response: str, user_id: str, category: str = None):
     # Preprocess message before creating embedding
@@ -375,25 +349,35 @@ def format_functions_for_ai(functions: List[Dict[str, Any]]) -> str:
 # Update the ask_ai function
 async def ask_ai(
     message: str, 
-    user_id: str, 
-    available_functions_param: List[Dict[str, Any]] = None,
-    ai_accessible_subjects: List[Dict[str, Any]] = None,
-    not_done_connections: List[Dict[str, Any]] = None,
-    custom_templates: List[Dict[str, Any]] = None,
-    all_templates: List[Dict[str, Any]] = None,
-    all_subjects_info: List[Dict[str, Any]] = None,
-    categories: List[Dict[str, Any]] = None
+    user: User,
+    ai_subject_ids: List[str] = None
 ) -> Dict[str, Any]:
-    # Use functions from consts if none provided, fix variable name conflict
-    if available_functions_param is None:
-        functions_to_use = available_functions
-    else:
-        functions_to_use = available_functions_param
+    # Fetch all data internally
+    if not ai_subject_ids:
+        ai_subject_ids = user.settings.get("ai_accessible", [])
     
-    user_name = await get_user_name(user_id)
+    # Fetch all system data
+    system_data = await fetch(str(user.id), ai_subject_ids)
+    ai_accessible_subjects = system_data.get('ai_accessible', [])
+    not_done_connections = system_data.get('connections', [])
+    all_templates = system_data.get('templates', [])
+    categories = system_data.get('categories', [])
     
-    retrieved_data = search_milvus(message, user_id)
-    last_messages = list(AIMessage.objects(user_id=user_id).order_by('-created_at').limit(10))
+    # Get all subjects info (basic info for all subjects)
+    all_subjects = list(Subject_db.objects(owner=str(user.id)))
+    all_subjects_info = []
+    for subj in all_subjects:
+        all_subjects_info.append({
+            "id": str(subj.id),
+            "name": subj.name,
+            "category": subj.category,
+            "created_at": subj.created_at.isoformat() if hasattr(subj, 'created_at') and subj.created_at else None
+        })
+    
+    user_name = await get_user_name(str(user.id))
+    
+    retrieved_data = search_milvus(message, str(user.id))
+    last_messages = list(AIMessage_db.objects(user_id=str(user.id)).order_by('-created_at').limit(10))
 
     # Format chat history efficiently for context
     chat_history = ""
@@ -417,7 +401,7 @@ async def ask_ai(
         instructions += f"The user's name is {user_name}. You can address them by name when appropriate.\n\n"
     
     # Add current system state context
-    if ai_accessible_subjects or all_subjects_info or categories or not_done_connections or custom_templates or all_templates:
+    if ai_accessible_subjects or all_subjects_info or categories or not_done_connections or all_templates:
         instructions += (
             "Current System State Information:\n"
             "You have access to the user's current data in the Planitly system. Use this information to provide context-aware responses and make intelligent function calls.\n\n"
@@ -469,10 +453,20 @@ async def ask_ai(
                 "These are connections that are not yet completed. You can reference these when discussing workflows or suggesting improvements.\n"
             )
             for conn in not_done_connections[:3]:  # Show first 3 as examples
-                conn_type = conn.get('type', 'manual')
-                from_subject = conn.get('from_subject_name', 'Unknown')
-                to_subject = conn.get('to_subject_name', 'Unknown')
-                instructions += f"- {from_subject} → {to_subject} ({conn_type})\n"
+                conn_type = conn.get('con_type', 'manual')
+                source_subject_id = conn.get('source_subject')
+                target_subject_id = conn.get('target_subject')
+                
+                # Get subject names from all_subjects_info
+                source_name = "Unknown"
+                target_name = "Unknown"
+                for subj in all_subjects_info:
+                    if subj['id'] == source_subject_id:
+                        source_name = subj['name']
+                    if subj['id'] == target_subject_id:
+                        target_name = subj['name']
+                
+                instructions += f"- {source_name} → {target_name} ({conn_type})\n"
             if len(not_done_connections) > 3:
                 instructions += f"... and {len(not_done_connections) - 3} more connections\n"
             instructions += "\n"
@@ -487,133 +481,125 @@ async def ask_ai(
             if len(template_names) > 5:
                 instructions += f"... and {len(template_names) - 5} more templates\n"
             instructions += "\n"
-        
-        if custom_templates:
-            custom_names = [tmpl.get('name', 'Unknown') for tmpl in custom_templates]
-            instructions += (
-                f"User's Custom Templates: {', '.join(custom_names)}\n"
-                "These are templates the user has created and can be reused for similar subjects.\n\n"
-            )
     
-    # Add function calling instructions if functions are available
-    if functions_to_use:
-        function_list = format_functions_for_ai(functions_to_use)
-        instructions += (
-            "Function Calling Instructions:\n"
-            "You have access to the following functions that you can call when appropriate:\n"
-            f"{function_list}\n\n"
-            "To call a function, use this exact format:\n"
-            "<<FUNCTION_CALL: function_name | parameters: {\"param1\": \"value1\", \"param2\": \"value2\"}>>\n"
-            "Only call functions when the user's request clearly requires that specific functionality. "
-            "Do not call functions unnecessarily. You can call multiple functions if needed.\n"
-            "Always provide a natural response to the user along with any function calls.\n\n"
-            
-            "Smart Function Usage with System Data:\n"
-            "- When the user asks about existing data, reference the AI-accessible subjects provided\n"
-            "- Use subject IDs from the provided data when calling functions that require them\n"
-            "- When suggesting connections, consider the existing subjects and their relationships\n"
-            "- Reference actual component IDs when creating data transfers\n"
-            "- Suggest appropriate categories from the available list\n"
-            "- Recommend relevant templates based on the user's current subjects\n\n"
-            
-            "Complete Function Categories Available:\n"
-            "**Creation Functions:**\n"
-            "- create_subject: Create new life areas/topics\n"
-            "- add_component_to_subject: Add data attributes to subjects\n"
-            "- create_connection: Link subjects with data flow relationships\n"
-            "- create_category: Organize subjects into categories\n"
-            "- create_data_transfer: Set up automatic data operations between components\n"
-            "- create_widget: Add visual elements (todos, tables, calendars, notes)\n"
-            "- create_custom_template: Create reusable subject templates\n"
-            "- add_todo_to_widget: Add tasks to todo widgets\n\n"
-            
-            "**Data Management Functions:**\n"
-            "- update_component_data: Modify existing component values or names\n"
-            "- get_subject_full_data: Retrieve complete subject information\n\n"
-            
-            "**Deletion Functions:**\n"
-            "- delete_subject: Remove subjects and all their data\n"
-            "- delete_component: Remove components from subjects\n"
-            "- delete_widget: Remove widgets and their data\n"
-            "- delete_connection: Remove subject relationships\n"
-            "- delete_category: Remove categories (subjects become 'Uncategorized')\n"
-            "- delete_data_transfer: Remove automatic data operations\n"
-            "- delete_custom_template: Remove user-created templates\n"
-            "- delete_todo: Remove specific todo items\n"
-            "- delete_notification: Remove system notifications\n\n"
-            
-            "**Access Control Functions:**\n"
-            "- remove_ai_accessible_subject: Remove subjects from AI access list\n\n"
-            
-            "Component Data Types Guide:\n"
-            "When creating components, use these exact type names:\n"
-            "- 'int': For numbers (data: {'item': 123})\n"
-            "- 'str': For text (data: {'item': 'text'})\n"
-            "- 'bool': For true/false (data: {'item': true})\n"
-            "- 'date': For dates (data: {'item': 'ISO_date_string'})\n"
-            "- 'pair': For key-value pairs (data: {'item': {'key': 'string', 'value': any}, 'type': {'key': 'str', 'value': 'any'}})\n"
-            "- 'Array_type': For arrays of integers (data: {'type': 'int'})\n"
-            "- 'Array_generic': For mixed arrays (data: {'type': 'any'})\n"
-            "- 'Array_of_strings': For string arrays (data: {'type': 'str'})\n"
-            "- 'Array_of_booleans': For boolean arrays (data: {'type': 'bool'})\n"
-            "- 'Array_of_dates': For date arrays (data: {'type': 'date'})\n"
-            "- 'Array_of_objects': For object arrays (data: {'type': 'object'})\n"
-            "- 'Array_of_pairs': For pair arrays (data: {'type': {'key': 'str', 'value': 'any'}})\n\n"
-            
-            "Data Transfer System - CRITICAL UNDERSTANDING:\n"
-            "Data transfers are operations that MODIFY the data inside components. They can work in two ways:\n\n"
-            
-            "1. **Component-to-Component Transfer**: Data flows from a source component to target component\n"
-            "   - Use 'source_component_id' parameter\n"
-            "   - The source component's value is used for the operation\n"
-            "   - Example: Transfer mood score from wellness subject to energy component\n\n"
-            
-            "2. **Direct Value Transfer**: A specific value is applied to the target component\n"
-            "   - Use 'data_value' parameter (NO source_component_id)\n"
-            "   - You provide the exact value/operation data\n"
-            "   - Example: Add 10 points to a score, set status to 'completed', append 'new item' to list\n\n"
-            
-            "Data Transfer Operations by Component Type:\n\n"
-            
-            "**Scalar Types (int/str/bool/date):**\n"
-            "- replace: Set new value → data_value: {'item': new_value}\n"
-            "- add (int only): Add to current → data_value: {'item': amount_to_add}\n"
-            "- multiply (int only): Multiply current → data_value: {'item': multiplier}\n"
-            "- toggle (bool only): Flip true/false → data_value: {} (no data needed)\n\n"
-            
-            "**Pair Type:**\n"
-            "- update_key: Change the key → data_value: {'item': {'key': 'new_key'}}\n"
-            "- update_value: Change the value → data_value: {'item': {'value': new_value}}\n\n"
-            
-            "**Array Types (all Array_* types):**\n"
-            "- append: Add to end → data_value: {'item': new_element}\n"
-            "- remove_back: Remove last → data_value: {} (no data needed)\n"
-            "- remove_front: Remove first → data_value: {} (no data needed)\n"
-            "- delete_at: Remove at index → data_value: {'index': position}\n"
-            "- push_at: Insert at index → data_value: {'item': new_element, 'index': position}\n"
-            "- update_at: Change at index → data_value: {'item': new_element, 'index': position}\n\n"
-            
-            "**Array_of_pairs Special:**\n"
-            "- update_pair: Modify pair at index → data_value: {'item': {'key': 'key', 'value': 'value'}, 'index': position}\n\n"
-            
-            "Widget Types Available:\n"
-            "- 'daily_todo': Task management with date organization\n"
-            "- 'table': Structured data display in rows/columns\n"
-            "- 'note': Free-form text notes\n"
-            "- 'calendar': Date/schedule management and visualization\n"
-            "- 'text_field': Simple text input field\n"
-            "- 'component_reference': Display/reference other component data\n\n"
-            
-            "Connection Types:\n"
-            "- 'manual': User-triggered connections (default)\n"
-            "- 'automatic': System-triggered based on conditions\n"
-            "- Connections can include data_transfers array for automatic data flow\n\n"
-            
-            "Template System:\n"
-            "- Built-in templates: Use template name (e.g., 'fitness', 'academic')\n"
-            "- Custom templates: Created by users, reusable across subjects\n"
-            "- Templates define complete subject structure with components and widgets\n\n"
-        )
+    # Add function calling instructions
+    function_list = format_functions_for_ai(available_functions)
+    instructions += (
+        "Function Calling Instructions:\n"
+        "You have access to the following functions that you can call when appropriate:\n"
+        f"{function_list}\n\n"
+        "To call a function, use this exact format:\n"
+        "<<FUNCTION_CALL: function_name | parameters: {\"param1\": \"value1\", \"param2\": \"value2\"}>>\n"
+        "Only call functions when the user's request clearly requires that specific functionality. "
+        "Do not call functions unnecessarily. You can call multiple functions if needed.\n"
+        "Always provide a natural response to the user along with any function calls.\n\n"
+        
+        "Smart Function Usage with System Data:\n"
+        "- When the user asks about existing data, reference the AI-accessible subjects provided\n"
+        "- Use subject IDs from the provided data when calling functions that require them\n"
+        "- When suggesting connections, consider the existing subjects and their relationships\n"
+        "- Reference actual component IDs when creating data transfers\n"
+        "- Suggest appropriate categories from the available list\n"
+        "- Recommend relevant templates based on the user's current subjects\n\n"
+        
+        "Complete Function Categories Available:\n"
+        "**Creation Functions:**\n"
+        "- create_subject: Create new life areas/topics\n"
+        "- add_component_to_subject: Add data attributes to subjects\n"
+        "- create_connection: Link subjects with data flow relationships\n"
+        "- create_category: Organize subjects into categories\n"
+        "- create_data_transfer: Set up automatic data operations between components\n"
+        "- create_widget: Add visual elements (todos, tables, calendars, notes)\n"
+        "- create_custom_template: Create reusable subject templates\n"
+        "- add_todo_to_widget: Add tasks to todo widgets\n\n"
+        
+        "**Data Management Functions:**\n"
+        "- update_component_data: Modify existing component values or names\n"
+        "- get_subject_full_data: Retrieve complete subject information\n\n"
+        
+        "**Deletion Functions:**\n"
+        "- delete_subject: Remove subjects and all their data\n"
+        "- delete_component: Remove components from subjects\n"
+        "- delete_widget: Remove widgets and their data\n"
+        "- delete_connection: Remove subject relationships\n"
+        "- delete_category: Remove categories (subjects become 'Uncategorized')\n"
+        "- delete_data_transfer: Remove automatic data operations\n"
+        "- delete_custom_template: Remove user-created templates\n"
+        "- delete_todo: Remove specific todo items\n"
+        "- delete_notification: Remove system notifications\n\n"
+        
+        "**Access Control Functions:**\n"
+        "- remove_ai_accessible_subject: Remove subjects from AI access list\n\n"
+        
+        "Component Data Types Guide:\n"
+        "When creating components, use these exact type names:\n"
+        "- 'int': For numbers (data: {'item': 123})\n"
+        "- 'str': For text (data: {'item': 'text'})\n"
+        "- 'bool': For true/false (data: {'item': true})\n"
+        "- 'date': For dates (data: {'item': 'ISO_date_string'})\n"
+        "- 'pair': For key-value pairs (data: {'item': {'key': 'string', 'value': any}, 'type': {'key': 'str', 'value': 'any'}})\n"
+        "- 'Array_type': For arrays of integers (data: {'type': 'int'})\n"
+        "- 'Array_generic': For mixed arrays (data: {'type': 'any'})\n"
+        "- 'Array_of_strings': For string arrays (data: {'type': 'str'})\n"
+        "- 'Array_of_booleans': For boolean arrays (data: {'type': 'bool'})\n"
+        "- 'Array_of_dates': For date arrays (data: {'type': 'date'})\n"
+        "- 'Array_of_objects': For object arrays (data: {'type': 'object'})\n"
+        "- 'Array_of_pairs': For pair arrays (data: {'type': {'key': 'str', 'value': 'any'}})\n\n"
+        
+        "Data Transfer System - CRITICAL UNDERSTANDING:\n"
+        "Data transfers are operations that MODIFY the data inside components. They can work in two ways:\n\n"
+        
+        "1. **Component-to-Component Transfer**: Data flows from a source component to target component\n"
+        "   - Use 'source_component_id' parameter\n"
+        "   - The source component's value is used for the operation\n"
+        "   - Example: Transfer mood score from wellness subject to energy component\n\n"
+        
+        "2. **Direct Value Transfer**: A specific value is applied to the target component\n"
+        "   - Use 'data_value' parameter (NO source_component_id)\n"
+        "   - You provide the exact value/operation data\n"
+        "   - Example: Add 10 points to a score, set status to 'completed', append 'new item' to list\n\n"
+        
+        "Data Transfer Operations by Component Type:\n\n"
+        
+        "**Scalar Types (int/str/bool/date):**\n"
+        "- replace: Set new value → data_value: {'item': new_value}\n"
+        "- add (int only): Add to current → data_value: {'item': amount_to_add}\n"
+        "- multiply (int only): Multiply current → data_value: {'item': multiplier}\n"
+        "- toggle (bool only): Flip true/false → data_value: {} (no data needed)\n\n"
+        
+        "**Pair Type:**\n"
+        "- update_key: Change the key → data_value: {'item': {'key': 'new_key'}}\n"
+        "- update_value: Change the value → data_value: {'item': {'value': new_value}}\n\n"
+        
+        "**Array Types (all Array_* types):**\n"
+        "- append: Add to end → data_value: {'item': new_element}\n"
+        "- remove_back: Remove last → data_value: {} (no data needed)\n"
+        "- remove_front: Remove first → data_value: {} (no data needed)\n"
+        "- delete_at: Remove at index → data_value: {'index': position}\n"
+        "- push_at: Insert at index → data_value: {'item': new_element, 'index': position}\n"
+        "- update_at: Change at index → data_value: {'item': new_element, 'index': position}\n\n"
+        
+        "**Array_of_pairs Special:**\n"
+        "- update_pair: Modify pair at index → data_value: {'item': {'key': 'key', 'value': 'value'}, 'index': position}\n\n"
+        
+        "Widget Types Available:\n"
+        "- 'daily_todo': Task management with date organization\n"
+        "- 'table': Structured data display in rows/columns\n"
+        "- 'note': Free-form text notes\n"
+        "- 'calendar': Date/schedule management and visualization\n"
+        "- 'text_field': Simple text input field\n"
+        "- 'component_reference': Display/reference other component data\n\n"
+        
+        "Connection Types:\n"
+        "- 'manual': User-triggered connections (default)\n"
+        "- 'automatic': System-triggered based on conditions\n"
+        "- Connections can include data_transfers array for automatic data flow\n\n"
+        
+        "Template System:\n"
+        "- Built-in templates: Use template name (e.g., 'fitness', 'academic')\n"
+        "- Custom templates: Created by users, reusable across subjects\n"
+        "- Templates define complete subject structure with components and widgets\n\n"
+    )
     
     instructions += (
         "Context about this application:\n"
@@ -672,6 +658,57 @@ async def ask_ai(
 
     # Parse function calls from AI response
     function_calls = parse_function_calls(ai_response)
+    
+    # Execute function calls and collect results
+    function_results = []
+    data_changed = False
+    
+    for func_call in function_calls:
+        function_name = func_call["function_name"]
+        parameters = func_call["parameters"]
+        
+        print(f"Executing function: {function_name} with parameters: {parameters}")
+        
+        try:
+            result = await execute_function_call(function_name, parameters, user)
+            function_results.append({
+                "function_name": function_name,
+                "parameters": parameters,
+                "result": result
+            })
+            
+            # Check if the function call succeeded and might have changed data
+            if result.get("success", False):
+                data_changing_functions = [
+                    "create_subject", "add_component_to_subject", "create_connection",
+                    "create_category", "create_data_transfer", "create_widget",
+                    "create_custom_template", "add_todo_to_widget", "update_component_data",
+                    "delete_subject", "delete_component", "delete_widget", "delete_connection",
+                    "delete_category", "delete_data_transfer", "delete_custom_template",
+                    "delete_todo", "delete_notification", "remove_ai_accessible_subject"
+                ]
+                if function_name in data_changing_functions:
+                    data_changed = True
+            
+            print(f"Function {function_name} result: {result}")
+            
+        except Exception as e:
+            error_result = {"success": False, "message": f"Error executing function: {str(e)}"}
+            function_results.append({
+                "function_name": function_name,
+                "parameters": parameters,
+                "result": error_result
+            })
+            print(f"Error executing function {function_name}: {e}")
+    
+    # If data changed, re-fetch the updated data for future context
+    updated_system_data = None
+    if data_changed:
+        try:
+            updated_system_data = await fetch(str(user.id), ai_subject_ids)
+            print("System data refreshed after function execution")
+        except Exception as e:
+            print(f"Error refreshing system data: {e}")
 
     # Check for resolved marker (conflict resolution)
     resolved_match = re.search(
@@ -685,9 +722,9 @@ async def ask_ai(
         print("LLM resolved conflict:", resolved_info, "Conflicts with:", conflicts_with, "Category:", resolved_category)
         milvus_client.delete(
             collection_name,
-            filter=f"user_id == '{user_id}' && category == '{resolved_category}' && user_message == '{conflicts_with}'"
+            filter=f"user_id == '{str(user.id)}' && category == '{resolved_category}' && user_message == '{conflicts_with}'"
         )
-        save_message_to_milvus(resolved_info, ai_response, user_id, resolved_category)
+        save_message_to_milvus(resolved_info, ai_response, str(user.id), resolved_category)
 
     # Check for store marker (general memory)
     store_match = re.search(r"<<STORE:(.*?)(?:\|category:(.*?))?>>", ai_response, re.DOTALL)
@@ -695,9 +732,9 @@ async def ask_ai(
         store_info = store_match.group(1).strip()
         store_category = store_match.group(2).strip() if store_match.group(2) else extract_category_from_text(store_info)
         print("LLM chose to store:", store_info, "Category:", store_category)
-        save_message_to_milvus(store_info, ai_response, user_id, store_category)
+        save_message_to_milvus(store_info, ai_response, str(user.id), store_category)
 
-    save_message(message, ai_response, user_id)
+    save_message(message, ai_response, str(user.id))
 
     # Remove the markers from the response shown to the user
     ai_response_clean = re.sub(r"<<STORE:.*?>>", "", ai_response, flags=re.DOTALL)
@@ -707,33 +744,56 @@ async def ask_ai(
     
     return {
         "message": ai_response_clean,
-        "function_calls": function_calls
+        "function_results": function_results,
+        "data_changed": data_changed,
+        "updated_system_data": updated_system_data
     }
 
-# API Route for Chat
+# Update the API Route for Chat
 @app.post('/chat')
 async def chat(request: ChatRequest):
-    if not request.message or not request.user_id:
-        raise HTTPException(status_code=400, detail="No message or user_id provided")
+    if not request.message or not request.user:
+        raise HTTPException(status_code=400, detail="No message or user provided")
     
-    # Use functions from request or fall back to consts
-    functions_to_use = request.available_functions if request.available_functions else available_functions
+    # Convert user dict to User object
+    try:
+        # Option 1: If you have the user ID and want to fetch from database
+        user_id = request.user.get('id') or request.user.get('_id')
+        if user_id:
+            user = User.objects(id=user_id).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+        else:
+            # Option 2: Create User object from provided data
+            user = User(
+                id=request.user.get('id'),
+                firebase_uid=request.user.get('firebase_uid'),
+                username=request.user.get('username'),
+                email=request.user.get('email'),
+                email_verified=request.user.get('email_verified', False),
+                admin=request.user.get('admin', False),
+                devices=request.user.get('devices', []),
+                invalid_attempts=request.user.get('invalid_attempts', 0),
+                firstname=request.user.get('firstname'),
+                lastname=request.user.get('lastname'),
+                phone_number=request.user.get('phone_number'),
+                birthday=request.user.get('birthday'),
+                default_subjects=request.user.get('default_subjects', {}),
+                settings=request.user.get('settings', {"ai_accessible": []})
+            )
+            
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid user data: {str(e)}")
     
     result = await ask_ai(
         message=request.message,
-        user_id=request.user_id,
-        available_functions_param=functions_to_use,
-        ai_accessible_subjects=request.ai_accessible_subjects,
-        not_done_connections=request.not_done_connections,
-        custom_templates=request.custom_templates,
-        all_templates=request.all_templates,
-        all_subjects_info=request.all_subjects_info,
-        categories=request.categories
+        user=user,
+        ai_subject_ids=request.ai_subject_ids
     )
     
     return {
         "message": result["message"],
-        "function_calls": result.get("function_calls", [])
+        "function_results": result.get("function_results", []),
+        "data_changed": result.get("data_changed", False),
+        "updated_system_data": result.get("updated_system_data")
     }
-
-# Run with: uvicorn app:app --reload

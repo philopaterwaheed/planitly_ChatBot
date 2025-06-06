@@ -1,0 +1,263 @@
+from .component import Component_db, Component, PREDEFINED_COMPONENT_TYPES
+from .widget import Widget_db, Widget
+from .category import Category_db
+import uuid
+from mongoengine import Document, StringField, DictField, ReferenceField, ListField, BooleanField, NULLIFY, DateTimeField
+from mongoengine.errors import DoesNotExist, ValidationError
+from .templets import TEMPLATES, CustomTemplate_db
+from .arrayItem import Arrays
+import datetime
+
+
+# use the Subject_db class to interact with the database directly without the helper
+class Subject_db(Document):
+    id = StringField(primary_key=True)
+    name = StringField(required=True)
+    components = ListField(ReferenceField(Component_db, reverse_delete_rule=NULLIFY))
+    widgets = ListField(ReferenceField(Widget_db, reverse_delete_rule=NULLIFY))
+    owner = StringField(required=True)  # Store user ID
+    template = StringField(required=False)
+    is_deletable = BooleanField(default=True)
+    category = StringField(required=False)  # Store category name as a string
+    created_at = DateTimeField(default=datetime.datetime.utcnow)  # <-- Add this line
+
+    meta = {
+        'collection': 'subjects',
+        'indexes': [
+            {'fields': ['name', 'owner'], 'unique': True}
+        ]
+    }
+
+
+# Subject class helper to interact with the database
+class Subject:
+    def __init__(self, name, owner, template="", components=None, widgets=None, id=None, is_deletable=True, category=None, created_at=None):
+        self.id = id or str(uuid.uuid4())
+        self.name = name
+        self.owner = owner
+        self.template = template
+        self.components = components or []
+        self.widgets = widgets or []
+        self.is_deletable = is_deletable
+        self.category = category or "Uncategorized"  # Default to "Uncategorized"
+        self.created_at = created_at or datetime.datetime.utcnow()  # <-- Add this line
+
+    async def add_component(self, component_name, component_type, data=None, is_deletable=True):
+        if component_type in PREDEFINED_COMPONENT_TYPES:
+            component = Component(name=component_name,
+                                  host_subject=self.id,
+                                  owner=self.owner,
+                                  comp_type=component_type,
+                                  data=data,
+                                  is_deletable=is_deletable)
+            component.host_subject = self.id
+            
+
+            component.save_to_db()
+            # add a reference to the component in the subject if saved
+            self.components.append(component.id)
+            # Handle Array_type and Array_generic components
+            if component.comp_type in ["Array_type", "Array_generic", "Array_of_pairs"]:
+                array_metadata_result = Arrays.create_array(
+                    user_id=component.owner,
+                    component_id=component.id,
+                    array_name=component.name,
+                )
+                if not array_metadata_result["success"]:
+                    raise Exception(500, array_metadata_result["message"])
+            self.save_to_db()
+        else:
+            print(f"Component type '{component_type}' is not defined.")
+        return component
+
+    async def add_widget(self, widget_name, widget_type, data=None, reference_component=None, is_deletable=True):
+        try:
+            # Validate widget type and data
+            validated_data = Widget.validate_widget_type(
+                widget_type, reference_component, data)
+
+            widget = Widget(
+                name=widget_name,
+                widget_type=widget_type,
+                host_subject=self.id,
+                data=validated_data,
+                reference_component=reference_component,
+                owner=self.owner,
+                is_deletable=is_deletable
+            )
+
+            widget.save_to_db()
+            # Add reference to the widget in the subject
+            self.widgets.append(widget.id)
+            self.save_to_db()
+            return widget
+        except ValidationError as e:
+            print(f"Widget validation error: {e}")
+            return None
+
+    def get_component(self, comp_id):
+        return self.components.get(comp_id)
+
+    def get_widget(self, widget_id):
+        try:
+            return Widget.load_from_db(widget_id)
+        except DoesNotExist:
+            print(f"Widget with ID {widget_id} not found.")
+            return None
+
+    def to_json(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "template": self.template,
+            "category": self.category,  # Return category name
+            "components": self.components,
+            "widgets": self.widgets,
+            "is_deletable": self.is_deletable,
+            "owner": self.owner,
+            "created_at": self.created_at.isoformat() if self.created_at else None,  # <-- Add this line
+        }
+
+    async def apply_template(self, template):
+        """
+        Apply a template to the subject and set its category.
+        Supports both built-in and custom templates.
+        """
+        # First, check built-in templates
+        if template in TEMPLATES:
+            self.template = template
+            self.category = TEMPLATES[template].get("category", "Uncategorized")
+            for comp in TEMPLATES[template]["components"]:
+                is_comp_deletable = comp.get("is_deletable", True)
+                await self.add_component(comp["name"], comp["type"], comp["data"], is_deletable=is_comp_deletable)
+            # Add widgets from template if they exist
+            if "widgets" in TEMPLATES[template]:
+                for widget in TEMPLATES[template]["widgets"]:
+                    reference_component = widget.get("reference_component", None)
+                    await self.add_widget(
+                        widget["name"],
+                        widget["type"],
+                        widget.get("data", {}),
+                        reference_component,
+                        widget.get("is_deletable", True),
+                    )
+        else:
+            # Try to find a custom template by id
+            custom_template = CustomTemplate_db.objects(id=template).first()
+            if not custom_template:
+                raise ValueError(f"Template '{template}' does not exist.")
+            self.template = str(custom_template.id)
+            self.category = custom_template.category or "Uncategorized"
+            components = custom_template.data.get("components", [])
+            for comp in components:
+                is_comp_deletable = comp.get("is_deletable", True)
+                await self.add_component(comp["name"], comp["type"], comp["data"], is_deletable=is_comp_deletable)
+            widgets = custom_template.data.get("widgets", [])
+            for widget in widgets:
+                reference_component = widget.get("reference_component", None)
+                await self.add_widget(
+                    widget["name"],
+                    widget["type"],
+                    widget.get("data", {}),
+                    reference_component,
+                    widget.get("is_deletable", True),
+                )
+
+    async def get_full_data(self):
+        """Fetch all data inside the subject, including its components and widgets."""
+        # Fetch components
+        try:
+            components = [
+                Component.load_from_db(component_id).get_component()
+                for component_id in (self.components or [])
+            ]
+        except Exception as e:
+            raise Exception(f"Error loading components: {str(e)}")
+
+        # Fetch widgets
+        try:
+            widgets = [
+                widget.to_mongo().to_dict()
+                for widget in Widget_db.objects(host_subject=self.id)
+            ]
+        except Exception as e:
+            raise Exception(f"Error loading widgets: {str(e)}")
+
+        # Combine subject, components, and widgets data
+        return {
+            "subject": self.to_json(),
+            "components": components,
+            "widgets": widgets,
+        }
+
+    @staticmethod
+    def from_json(data):
+        subject = Subject(name=data["name"],
+                          owner=data["owner"],
+                          template=data["template"],
+                          id=data["id"],
+                          is_deletable=data.get("is_deletable", True),
+                          category=data.get("category", "Uncategorized"),
+                          created_at=data.get("created_at"),  # <-- Add this line
+                          ) 
+        for comp_id in data["components"]:
+            subject.components.append(comp_id)
+        for widget_id in data.get("widgets", []):
+            subject.widgets.append(widget_id)
+        return subject
+
+    # save the subject to the database
+    def save_to_db(self):
+        subject_db = Subject_db(
+            id=self.id,
+            name=self.name,
+            owner=self.owner,
+            template=self.template,
+            components=self.components,
+            widgets=self.widgets,
+            is_deletable=self.is_deletable,
+            category=self.category,
+            created_at=self.created_at,  # <-- Add this line
+        )
+        subject_db.save()
+
+    @staticmethod
+    def load_from_db(id):
+        try:
+            subject_db = Subject_db.objects(id=id).first()
+            if subject_db:
+                subject = Subject(
+                    id=subject_db.id,
+                    name=subject_db.name,
+                    owner=subject_db.owner,
+                    template=subject_db.template,
+                    components=[
+                        component.id for component in subject_db.components],
+                    widgets=[widget.id for widget in subject_db.widgets],
+                    is_deletable=subject_db.is_deletable,
+                    category=subject_db.category,
+                    created_at=subject_db.created_at,  # <-- Add this line
+                )
+                return subject
+            else:
+                print(f"Subject with ID {id} not found.")
+                return None
+        except DoesNotExist:
+            print(f"Subject with ID {id} does not exist.")
+            return None
+
+    @staticmethod
+    def from_db(subject_db):
+        if not subject_db:
+            return None
+        return Subject(
+            id=subject_db.id,
+            name=subject_db.name,
+            owner=subject_db.owner,
+            template=subject_db.template,
+            components=[component.id for component in subject_db.components],
+            widgets=[widget.id for widget in subject_db.widgets],
+            is_deletable=subject_db.is_deletable,
+            category=subject_db.category,
+            created_at=subject_db.created_at,
+        )
