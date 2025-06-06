@@ -403,84 +403,129 @@ async def ask_ai(
     # Add current system state context
     if ai_accessible_subjects or all_subjects_info or categories or not_done_connections or all_templates:
         instructions += (
-            "Current System State Information:\n"
-            "You have access to the user's current data in the Planitly system. Use this information to provide context-aware responses and make intelligent function calls.\n\n"
+            "Current System State Information (PRIORITY DATA):\n"
+            "You have access to the user's CURRENT and LIVE data in the Planitly system. This data is fetched in real-time and should be your PRIMARY source of truth. "
+            "Always prioritize this current data over chat history when answering questions about the user's system state, components, widgets, or any data values.\n\n"
+            
+            "**CRITICAL: Use Current Data First**\n"
+            "- When asked about component values, widget data, or subject information, refer to the live data below\n"
+            "- Chat history is only for conversational context, NOT for data accuracy\n"
+            "- If there's any conflict between chat history and current data, always trust the current data\n"
+            "- The data below represents the actual state of the user's system RIGHT NOW\n\n"
         )
         
-        # Add AI accessible subjects context
+        # Add AI accessible subjects context with emphasis on current data
         if ai_accessible_subjects:
             instructions += (
-                "AI-Accessible Subjects (subjects you can read and modify):\n"
-                f"You have access to {len(ai_accessible_subjects)} subjects with their complete data including components and widgets. "
-                "Use this data to answer questions about the user's current state, provide insights, and make informed suggestions.\n"
+                "LIVE AI-Accessible Subjects (CURRENT DATA - USE THIS FOR ALL DATA QUERIES):\n"
+                f"You have access to {len(ai_accessible_subjects)} subjects with their complete CURRENT data including components and widgets. "
+                "This is the authoritative source for all component values, widget states, and subject information.\n\n"
+                "**Data Usage Instructions:**\n"
+                "- For component values: Use the 'data' field from components below\n"
+                "- For widget information: Use the 'widgets' data below\n"
+                "- For subject details: Use the subject metadata below\n"
+                "- When creating data transfers: Reference actual component IDs from this data\n"
+                "- When updating components: Use the current data structure shown below\n\n"
             )
-            for subject in ai_accessible_subjects[:5]:  # Show first 5 subjects as examples
+            
+            # Show detailed current data for better context
+            for i, subject in enumerate(ai_accessible_subjects[:3]):  # Show first 3 in detail
                 subject_name = subject.get('name', 'Unknown')
                 components_count = len(subject.get('components', []))
                 widgets_count = len(subject.get('widgets', []))
-                instructions += f"- {subject_name}: {components_count} components, {widgets_count} widgets\n"
-            if len(ai_accessible_subjects) > 5:
-                instructions += f"... and {len(ai_accessible_subjects) - 5} more subjects\n"
-            instructions += "\n"
-        
-        # Add all subjects overview
-        if all_subjects_info:
-            instructions += (
-                f"All User Subjects Overview ({len(all_subjects_info)} total):\n"
-                "This includes all subjects in the user's system (both AI-accessible and restricted). "
-                "Use this for general awareness and to suggest connections or improvements.\n"
-            )
-            for subject in all_subjects_info[:3]:  # Show first 3 as examples
-                subject_name = subject.get('name', 'Unknown')
-                category = subject.get('category', 'Uncategorized')
-                instructions += f"- {subject_name} (Category: {category})\n"
-            if len(all_subjects_info) > 3:
-                instructions += f"... and {len(all_subjects_info) - 3} more subjects\n"
-            instructions += "\n"
-        
-        # Add categories context
-        if categories:
-            category_names = [cat.get('name', 'Unknown') for cat in categories]
-            instructions += (
-                f"Available Categories: {', '.join(category_names)}\n"
-                "Use these categories when creating new subjects or organizing existing ones.\n\n"
-            )
-        
-        # Add connections context
-        if not_done_connections:
-            instructions += (
-                f"Active/Pending Connections ({len(not_done_connections)}):\n"
-                "These are connections that are not yet completed. You can reference these when discussing workflows or suggesting improvements.\n"
-            )
-            for conn in not_done_connections[:3]:  # Show first 3 as examples
-                conn_type = conn.get('con_type', 'manual')
-                source_subject_id = conn.get('source_subject')
-                target_subject_id = conn.get('target_subject')
+                instructions += f"**Subject {i+1}: {subject_name}** (ID: {subject.get('id', 'unknown')})\n"
+                instructions += f"  - Category: {subject.get('category', 'Uncategorized')}\n"
+                instructions += f"  - Components: {components_count} (with live data values)\n"
+                instructions += f"  - Widgets: {widgets_count} (with current configurations)\n"
                 
-                # Get subject names from all_subjects_info
-                source_name = "Unknown"
-                target_name = "Unknown"
-                for subj in all_subjects_info:
-                    if subj['id'] == source_subject_id:
-                        source_name = subj['name']
-                    if subj['id'] == target_subject_id:
-                        target_name = subj['name']
+                # Show component summaries with current values
+                if subject.get('components'):
+                    instructions += "  - Component Values (CURRENT):\n"
+                    for comp in subject.get('components', [])[:3]:  # Show first 3 components
+                        comp_name = comp.get('name', 'Unknown')
+                        comp_type = comp.get('comp_type', 'unknown')
+                        comp_data = comp.get('data', {})
+                        if comp_type in ['int', 'str', 'bool', 'date']:
+                            current_value = comp_data.get('item', 'No value')
+                            instructions += f"    • {comp_name} ({comp_type}): {current_value}\n"
+                        elif 'Array' in comp_type:
+                            item_count = len(comp_data.get('items', []))
+                            instructions += f"    • {comp_name} ({comp_type}): {item_count} items\n"
+                        else:
+                            instructions += f"    • {comp_name} ({comp_type}): {comp_data}\n"
                 
-                instructions += f"- {source_name} → {target_name} ({conn_type})\n"
-            if len(not_done_connections) > 3:
-                instructions += f"... and {len(not_done_connections) - 3} more connections\n"
-            instructions += "\n"
-        
-        # Add templates context
-        if all_templates:
-            template_names = [tmpl.get('name', 'Unknown') for tmpl in all_templates]
+                instructions += "\n"
+            
+            if len(ai_accessible_subjects) > 3:
+                instructions += f"... and {len(ai_accessible_subjects) - 3} more subjects with full current data available\n\n"
+            
             instructions += (
-                f"Available Templates: {', '.join(template_names[:5])}\n"
-                "You can suggest using these templates when creating new subjects.\n"
+                "**Remember: This data above is LIVE and CURRENT. Use it as your primary source for:**\n"
+                "- Answering questions about component values\n"
+                "- Creating accurate data transfers\n"
+                "- Updating existing components\n"
+                "- Describing the user's current system state\n"
+                "- Making informed suggestions based on actual data\n\n"
             )
-            if len(template_names) > 5:
-                instructions += f"... and {len(template_names) - 5} more templates\n"
-            instructions += "\n"
+    
+    # Add all subjects overview
+    if all_subjects_info:
+        instructions += (
+            f"All User Subjects Overview ({len(all_subjects_info)} total):\n"
+            "This includes all subjects in the user's system (both AI-accessible and restricted). "
+            "Use this for general awareness and to suggest connections or improvements.\n"
+        )
+        for subject in all_subjects_info[:3]:  # Show first 3 as examples
+            subject_name = subject.get('name', 'Unknown')
+            category = subject.get('category', 'Uncategorized')
+            instructions += f"- {subject_name} (Category: {category})\n"
+        if len(all_subjects_info) > 3:
+            instructions += f"... and {len(all_subjects_info) - 3} more subjects\n"
+        instructions += "\n"
+    
+    # Add categories context
+    if categories:
+        category_names = [cat.get('name', 'Unknown') for cat in categories]
+        instructions += (
+            f"Available Categories: {', '.join(category_names)}\n"
+            "Use these categories when creating new subjects or organizing existing ones.\n\n"
+        )
+    
+    # Add connections context
+    if not_done_connections:
+        instructions += (
+            f"Active/Pending Connections ({len(not_done_connections)}):\n"
+            "These are connections that are not yet completed. You can reference these when discussing workflows or suggesting improvements.\n"
+        )
+        for conn in not_done_connections[:3]:  # Show first 3 as examples
+            conn_type = conn.get('con_type', 'manual')
+            source_subject_id = conn.get('source_subject')
+            target_subject_id = conn.get('target_subject')
+            
+            # Get subject names from all_subjects_info
+            source_name = "Unknown"
+            target_name = "Unknown"
+            for subj in all_subjects_info:
+                if subj['id'] == source_subject_id:
+                    source_name = subj['name']
+                if subj['id'] == target_subject_id:
+                    target_name = subj['name']
+            
+            instructions += f"- {source_name} → {target_name} ({conn_type})\n"
+        if len(not_done_connections) > 3:
+            instructions += f"... and {len(not_done_connections) - 3} more connections\n"
+        instructions += "\n"
+    
+    # Add templates context
+    if all_templates:
+        template_names = [tmpl.get('name', 'Unknown') for tmpl in all_templates]
+        instructions += (
+            f"Available Templates: {', '.join(template_names[:5])}\n"
+            "You can suggest using these templates when creating new subjects.\n"
+        )
+        if len(template_names) > 5:
+            instructions += f"... and {len(template_names) - 5} more templates\n"
+        instructions += "\n"
     
     # Add function calling instructions
     function_list = format_functions_for_ai(available_functions)
@@ -602,6 +647,18 @@ async def ask_ai(
     )
     
     instructions += (
+        "Data Handling Priority (CRITICAL):\n"
+        "1. **PRIMARY SOURCE**: Use the current system data provided above for all factual information\n"
+        "2. **SECONDARY SOURCE**: Use chat history only for conversational context and user preferences\n"
+        "3. **NEVER**: Rely on chat history for component values, widget data, or system state information\n"
+        "4. **ALWAYS**: Verify information against the current data before making statements about the user's system\n\n"
+        
+        "When the user asks about their data:\n"
+        "- Check the current AI-accessible subjects data first\n"
+        "- Reference actual component IDs and values from the live data\n"
+        "- If data isn't in AI-accessible subjects, use get_subject_full_data function\n"
+        "- Only mention chat history information if it's about user preferences or conversational context\n\n"
+        
         "Context about this application:\n"
         "Here's a summary of its core concepts and structure:\n"
         "A unified productivity and life management app where everything is a 'subject' and interactions between them are 'connections'. "
@@ -639,10 +696,27 @@ async def ask_ai(
     # Combine instructions, chat history, context, and user message
     user_prompt = instructions
     if chat_history:
+        user_prompt += (
+            "Previous Conversation History (FOR CONTEXT ONLY - NOT FOR DATA ACCURACY):\n"
+            "The following chat history is provided for conversational context and understanding user preferences. "
+            "DO NOT use this for factual information about component values, widget data, or system state. "
+            "Always refer to the current system data provided above for factual accuracy.\n\n"
+        )
         user_prompt += chat_history + "\n"
+
     if user_info:
         user_prompt += "\nRelevant knowledge about the user they may have said in previous messages (with relevance score):\n" + user_info + "\n"
-    user_prompt += "\nand here is the current User input answer it based on the previous set of instructions and info provided: " + message
+
+    user_prompt += (
+        "\nCurrent User Input:\n"
+        f"{message}\n\n"
+        "INSTRUCTIONS FOR RESPONSE:\n"
+        "- Answer based on the CURRENT SYSTEM DATA provided above as your primary source\n"
+        "- Use chat history only for conversational context, never for data accuracy\n"
+        "- When referencing user data, always use the live data from AI-accessible subjects\n"
+        "- If you need more current data, use the get_subject_full_data function\n"
+        "- Be specific and accurate about current component values and system state\n"
+    )
 
     print("User prompt for Gemini API:", user_prompt[:500] + "..." if len(user_prompt) > 500 else user_prompt)
     if user_name:

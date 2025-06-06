@@ -1,5 +1,5 @@
 from datetime import datetime
-from models import Subject_db, Connection_db, CustomTemplate_db, Category_db, User
+from models import Subject_db, Connection_db, CustomTemplate_db, Category_db, User, Subject, Component, Widget_db
 from bson import ObjectId
 
 def serialize_datetime(obj):
@@ -41,45 +41,51 @@ async def fetch_subjects(user_id, ai_subject_ids):
     ai_subjects_full_data = []
     for subj_id in ai_subject_ids:
         if subj_id in all_subjects_dict:
-            subj = all_subjects_dict[subj_id]
-            if subj:
-                # Get full data with components and widgets
-                full_data = {
-                    "id": str(subj.id),
-                    "name": subj.name,
-                    "category": subj.category,
-                    "owner": str(subj.owner),
-                    "created_at": subj.created_at.isoformat() if hasattr(subj, 'created_at') and subj.created_at else None,
-                    "components": [],
-                    "widgets": []
-                }
-                
-                # Add components data - Fix: components are ReferenceField objects
-                for component_ref in subj.components:
-                    if component_ref:  # Check if reference exists
-                        comp_data = {
-                            "id": str(component_ref.id),
-                            "name": component_ref.name,
-                            "type": component_ref.comp_type,  # Fix: field is comp_type, not type
-                            "data": component_ref.data,
-                            "created_at": component_ref.created_at.isoformat() if hasattr(component_ref, 'created_at') and component_ref.created_at else None
+            subj_db = all_subjects_dict[subj_id]
+            if subj_db:
+                try:
+                    # Use the Subject helper class to get full data
+                    subject = Subject.from_db(subj_db)
+                    if subject:
+                        # Get the full data including components and widgets with all their data
+                        full_data_result = await subject.get_full_data()
+                        
+                        # Extract the subject data
+                        subject_data = full_data_result["subject"]
+                        components_data = full_data_result["components"]
+                        widgets_data = full_data_result["widgets"]
+                        
+                        # Format the response structure
+                        full_data = {
+                            "id": str(subject_data["id"]),
+                            "name": subject_data["name"],
+                            "category": subject_data.get("category", "Uncategorized"),
+                            "owner": str(subject_data["owner"]),
+                            "template": subject_data.get("template", ""),
+                            "is_deletable": subject_data.get("is_deletable", True),
+                            "created_at": subject_data.get("created_at"),
+                            "components": components_data,  # Full component data with all properties
+                            "widgets": widgets_data  # Full widget data with all properties
                         }
-                        full_data["components"].append(comp_data)
-                
-                # Add widgets data - Fix: widgets are ReferenceField objects
-                for widget_ref in subj.widgets:
-                    if widget_ref:  # Check if reference exists
-                        widget_data = {
-                            "id": str(widget_ref.id),
-                            "name": widget_ref.name,
-                            "type": widget_ref.widget_type,  # Fix: field is widget_type, not type
-                            "data": widget_ref.data,
-                            "created_at": widget_ref.created_at.isoformat() if hasattr(widget_ref, 'created_at') and widget_ref.created_at else None
-                        }
-                        full_data["widgets"].append(widget_data)
-                
-                # Serialize datetime objects in full_data
-                ai_subjects_full_data.append(serialize_datetime(full_data))
+                        
+                        # Serialize datetime objects in full_data
+                        ai_subjects_full_data.append(serialize_datetime(full_data))
+                        
+                except Exception as e:
+                    print(f"Error fetching full data for subject {subj_id}: {e}")
+                    # Fallback to basic data if full data fetch fails
+                    basic_data = {
+                        "id": str(subj_db.id),
+                        "name": subj_db.name,
+                        "category": subj_db.category,
+                        "owner": str(subj_db.owner),
+                        "created_at": subj_db.created_at.isoformat() if hasattr(subj_db, 'created_at') and subj_db.created_at else None,
+                        "components": [],
+                        "widgets": [],
+                        "error": f"Could not fetch full data: {str(e)}"
+                    }
+                    ai_subjects_full_data.append(serialize_datetime(basic_data))
+                    
     return ai_subjects_full_data
 
 async def fetch_connections(user_id, ai_subject_ids):
@@ -98,7 +104,7 @@ async def fetch_connections(user_id, ai_subject_ids):
             "target_subject": str(conn.target_subject.id) if conn.target_subject else None,
             "con_type": conn.con_type,
             "data_transfers": [str(dt.id) for dt in conn.data_transfers] if conn.data_transfers else [],
-            "owner": str(conn.owner) if conn.owner else None,  # Fix: owner is StringField, not ReferenceField
+            "owner": str(conn.owner) if conn.owner else None,
             "start_date": conn.start_date.isoformat() if conn.start_date else None,
             "end_date": conn.end_date.isoformat() if conn.end_date else None,
             "done": conn.done
@@ -145,7 +151,7 @@ async def fetch_categories(user_id):
         category_dict = {
             "id": str(category.id),
             "name": category.name,
-            "description": category.description if hasattr(category, 'description') else None,  # Fix: description might not exist
+            "description": category.description if hasattr(category, 'description') else None,
             "owner": str(category.owner.id),  # Fix: owner is ReferenceField to User
             "created_at": category.created_at.isoformat() if hasattr(category, 'created_at') and category.created_at else None
         }
