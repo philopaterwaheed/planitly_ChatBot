@@ -539,13 +539,29 @@ async def ask_ai(
         "Do not call functions unnecessarily. You can call multiple functions if needed.\n"
         "Always provide a natural response to the user along with any function calls.\n\n"
         
+        "**CRITICAL ID HANDLING RULES:**\n"
+        "- NEVER ask the user for any IDs (subject_id, component_id, widget_id, etc.)\n"
+        "- NEVER show or mention IDs to the user in your responses\n"
+        "- ONLY use IDs that are provided in the current system data above\n"
+        "- When user refers to subjects/components by name, find the corresponding ID from the context data\n"
+        "- If you cannot find the required ID in the provided data, inform the user that the item doesn't exist or isn't accessible\n"
+        "- IDs are internal system identifiers - users should only work with names\n\n"
+        
         "Smart Function Usage with System Data:\n"
         "- When the user asks about existing data, reference the AI-accessible subjects provided\n"
         "- Use subject IDs from the provided data when calling functions that require them\n"
-        "- When suggesting connections, consider the existing subjects and their relationships\n"
+        "- When user mentions a subject by name (e.g., 'Fitness'), find its ID from ai_accessible_subjects\n"
+        "- When user mentions a component by name, find its ID from the components list of the relevant subject\n"
+        "- When user mentions a widget by name, find its ID from the widgets list of the relevant subject\n"
         "- Reference actual component IDs when creating data transfers\n"
         "- Suggest appropriate categories from the available list\n"
         "- Recommend relevant templates based on the user's current subjects\n\n"
+        
+        "ID Resolution Examples:\n"
+        "- User says 'update my weight in fitness': Find 'Fitness' subject ID, then find 'Weight' component ID\n"
+        "- User says 'add task to my daily todos': Find subject with daily_todo widget, then use widget ID\n"
+        "- User says 'delete my workout log': Find subject containing 'Workout Log' component, use component ID\n"
+        "- If item not found: 'I cannot find that item in your accessible subjects'\n\n"
         
         "Complete Function Categories Available:\n"
         "**Creation Functions:**\n"
@@ -595,7 +611,7 @@ async def ask_ai(
         "Data transfers are operations that MODIFY the data inside components. They can work in two ways:\n\n"
         
         "1. **Component-to-Component Transfer**: Data flows from a source component to target component\n"
-        "   - Use 'source_component_id' parameter\n"
+        "   - Use 'source_component_id' parameter with ID from context data\n"
         "   - The source component's value is used for the operation\n"
         "   - Example: Transfer mood score from wellness subject to energy component\n\n"
         
@@ -651,48 +667,181 @@ async def ask_ai(
         "1. **PRIMARY SOURCE**: Use the current system data provided above for all factual information\n"
         "2. **SECONDARY SOURCE**: Use chat history only for conversational context and user preferences\n"
         "3. **NEVER**: Rely on chat history for component values, widget data, or system state information\n"
-        "4. **ALWAYS**: Verify information against the current data before making statements about the user's system\n\n"
+        "4. **ALWAYS**: Verify information against the current data before making statements about the user's system\n"
+        "5. **ID SECURITY**: Never expose internal IDs to users - work with names only in user communication\n\n"
         
         "When the user asks about their data:\n"
         "- Check the current AI-accessible subjects data first\n"
-        "- Reference actual component IDs and values from the live data\n"
+        "- Reference actual component IDs and values from the live data (but don't show IDs to user)\n"
         "- If data isn't in AI-accessible subjects, use get_subject_full_data function\n"
-        "- Only mention chat history information if it's about user preferences or conversational context\n\n"
+        "- Only mention chat history information if it's about user preferences or conversational context\n"
+        "- Translate user's natural language references to the appropriate IDs from context\n\n"
         
-        "Context about this application:\n"
-        "Here's a summary of its core concepts and structure:\n"
-        "A unified productivity and life management app where everything is a 'subject' and interactions between them are 'connections'. "
-        "The model mimics how people naturally think about life: as a network of interrelated topics, events, and responsibilities.\n"
-        "Key Concepts:\n"
-        "1. Subjects: Each aspect of your life is represented as a subject (e.g., 'Me', 'Tasks', 'Finance', 'University', 'Mental Health', 'Hobbies', 'People'). "
-        "Subjects have customizable attributes, can contain widgets, and are modular.\n"
-        "2. Connections: Subjects interact via Connections, defining input/output relationships. Connections can be manual or automated.\n"
-        "3. Input/Output Flow: Data flows between subjects through connections (e.g., a Study Task outputs to 'Me' and boosts 'Knowledge' or 'Mood').\n"
-        "4. Main Built-in Subjects: Me, Finance, HabitTracker.\n"
-        "5. Visual Widgets: Some subjects render data visually (graphs, flowcharts) and support manual or automated input.\n"
-        "AI Integration: The app includes AI-based features such as personalized suggestions, a natural language interface, and automated subject/connection generation based on usage.\n\n"
-        "Conflict Handling Instructions:\n"
-        "If you notice any conflicting or inconsistent information in the user's previous messages or stored knowledge, do the following:\n"
-        "- Politely point out the conflict or inconsistency.\n"
-        "- Output the previous (conflicting) information in this format for resolution.\n"
-        "- If the user provides clarification or resolves the conflict, output the resolved information in this format:\n"
-        "  <<RESOLVED: [the clarified/correct information about the user] | CONFLICTS_WITH: [brief description of what this replaces] | category: [category]>>\n"
-        "- Always remain neutral and helpful when addressing conflicts.\n\n"
-        "Memory Instructions:\n"
-        "If the user provides information that should be remembered for future conversations (such as facts about themselves, preferences, corrections, or resolved conflicts), "
-        "output the information to be stored in this format on a new line: <<STORE: [the information about the user]>>\n"
-        "If no new information needs to be stored, do not output this marker.\n"
-        "For both Conflicts and Memory storage, always phrase the stored information from a third-person perspective referring to 'the user' (e.g., 'The user prefers...', 'The user is studying...', 'The user lives in...').\n\n"
-        "Below is the recent conversation history for context:\n"
+        "User Communication Guidelines:\n"
+        "- Always refer to subjects, components, and widgets by their names in responses\n"
+        "- Use natural language: 'your Fitness subject' not 'subject ID abc123'\n"
+        "- If you can't find something: 'I cannot find that item' not 'ID not found'\n"
+        "- Be helpful: 'I'll update your weight in the Fitness subject' not 'updating component_id_xyz'\n\n"
     )
     
-    user_info = ""
-    if retrieved_data:
-        user_info = "\n".join(
-            f"User: {item['user_message']} (Category: {item['category']}, Vector Score: {item['vector_score']:.4f})"
-            for item in retrieved_data
-        )
-
+    # Add function calling instructions
+    function_list = format_functions_for_ai(available_functions)
+    instructions += (
+        "Function Calling Instructions:\n"
+        "You have access to the following functions that you can call when appropriate:\n"
+        f"{function_list}\n\n"
+        "To call a function, use this exact format:\n"
+        "<<FUNCTION_CALL: function_name | parameters: {\"param1\": \"value1\", \"param2\": \"value2\"}>>\n"
+        "Only call functions when the user's request clearly requires that specific functionality. "
+        "Do not call functions unnecessarily. You can call multiple functions if needed.\n"
+        "Always provide a natural response to the user along with any function calls.\n\n"
+        
+        "**CRITICAL ID HANDLING RULES:**\n"
+        "- NEVER ask the user for any IDs (subject_id, component_id, widget_id, etc.)\n"
+        "- NEVER show or mention IDs to the user in your responses\n"
+        "- ONLY use IDs that are provided in the current system data above\n"
+        "- When user refers to subjects/components by name, find the corresponding ID from the context data\n"
+        "- If you cannot find the required ID in the provided data, inform the user that the item doesn't exist or isn't accessible\n"
+        "- IDs are internal system identifiers - users should only work with names\n\n"
+        
+        "Smart Function Usage with System Data:\n"
+        "- When the user asks about existing data, reference the AI-accessible subjects provided\n"
+        "- Use subject IDs from the provided data when calling functions that require them\n"
+        "- When user mentions a subject by name (e.g., 'Fitness'), find its ID from ai_accessible_subjects\n"
+        "- When user mentions a component by name, find its ID from the components list of the relevant subject\n"
+        "- When user mentions a widget by name, find its ID from the widgets list of the relevant subject\n"
+        "- Reference actual component IDs when creating data transfers\n"
+        "- Suggest appropriate categories from the available list\n"
+        "- Recommend relevant templates based on the user's current subjects\n\n"
+        
+        "ID Resolution Examples:\n"
+        "- User says 'update my weight in fitness': Find 'Fitness' subject ID, then find 'Weight' component ID\n"
+        "- User says 'add task to my daily todos': Find subject with daily_todo widget, then use widget ID\n"
+        "- User says 'delete my workout log': Find subject containing 'Workout Log' component, use component ID\n"
+        "- If item not found: 'I cannot find that item in your accessible subjects'\n\n"
+        
+        "Complete Function Categories Available:\n"
+        "**Creation Functions:**\n"
+        "- create_subject: Create new life areas/topics\n"
+        "- add_component_to_subject: Add data attributes to subjects\n"
+        "- create_connection: Link subjects with data flow relationships\n"
+        "- create_category: Organize subjects into categories\n"
+        "- create_data_transfer: Set up automatic data operations between components\n"
+        "- create_widget: Add visual elements (todos, tables, calendars, notes)\n"
+        "- create_custom_template: Create reusable subject templates\n"
+        "- add_todo_to_widget: Add tasks to todo widgets\n\n"
+        
+        "**Data Management Functions:**\n"
+        "- update_component_data: Modify existing component values or names\n"
+        "- get_subject_full_data: Retrieve complete subject information\n\n"
+        
+        "**Deletion Functions:**\n"
+        "- delete_subject: Remove subjects and all their data\n"
+        "- delete_component: Remove components from subjects\n"
+        "- delete_widget: Remove widgets and their data\n"
+        "- delete_connection: Remove subject relationships\n"
+        "- delete_category: Remove categories (subjects become 'Uncategorized')\n"
+        "- delete_data_transfer: Remove automatic data operations\n"
+        "- delete_custom_template: Remove user-created templates\n"
+        "- delete_todo: Remove specific todo items\n"
+        "- delete_notification: Remove system notifications\n\n"
+        
+        "**Access Control Functions:**\n"
+        "- remove_ai_accessible_subject: Remove subjects from AI access list\n\n"
+        
+        "Component Data Types Guide:\n"
+        "When creating components, use these exact type names:\n"
+        "- 'int': For numbers (data: {'item': 123})\n"
+        "- 'str': For text (data: {'item': 'text'})\n"
+        "- 'bool': For true/false (data: {'item': true})\n"
+        "- 'date': For dates (data: {'item': 'ISO_date_string'})\n"
+        "- 'pair': For key-value pairs (data: {'item': {'key': 'string', 'value': any}, 'type': {'key': 'str', 'value': 'any'}})\n"
+        "- 'Array_type': For arrays of integers (data: {'type': 'int'})\n"
+        "- 'Array_generic': For mixed arrays (data: {'type': 'any'})\n"
+        "- 'Array_of_strings': For string arrays (data: {'type': 'str'})\n"
+        "- 'Array_of_booleans': For boolean arrays (data: {'type': 'bool'})\n"
+        "- 'Array_of_dates': For date arrays (data: {'type': 'date'})\n"
+        "- 'Array_of_objects': For object arrays (data: {'type': 'object'})\n"
+        "- 'Array_of_pairs': For pair arrays (data: {'type': {'key': 'str', 'value': 'any'}})\n\n"
+        
+        "Data Transfer System - CRITICAL UNDERSTANDING:\n"
+        "Data transfers are operations that MODIFY the data inside components. They can work in two ways:\n\n"
+        
+        "1. **Component-to-Component Transfer**: Data flows from a source component to target component\n"
+        "   - Use 'source_component_id' parameter with ID from context data\n"
+        "   - The source component's value is used for the operation\n"
+        "   - Example: Transfer mood score from wellness subject to energy component\n\n"
+        
+        "2. **Direct Value Transfer**: A specific value is applied to the target component\n"
+        "   - Use 'data_value' parameter (NO source_component_id)\n"
+        "   - You provide the exact value/operation data\n"
+        "   - Example: Add 10 points to a score, set status to 'completed', append 'new item' to list\n\n"
+        
+        "Data Transfer Operations by Component Type:\n\n"
+        
+        "**Scalar Types (int/str/bool/date):**\n"
+        "- replace: Set new value → data_value: {'item': new_value}\n"
+        "- add (int only): Add to current → data_value: {'item': amount_to_add}\n"
+        "- multiply (int only): Multiply current → data_value: {'item': multiplier}\n"
+        "- toggle (bool only): Flip true/false → data_value: {} (no data needed)\n\n"
+        
+        "**Pair Type:**\n"
+        "- update_key: Change the key → data_value: {'item': {'key': 'new_key'}}\n"
+        "- update_value: Change the value → data_value: {'item': {'value': new_value}}\n\n"
+        
+        "**Array Types (all Array_* types):**\n"
+        "- append: Add to end → data_value: {'item': new_element}\n"
+        "- remove_back: Remove last → data_value: {} (no data needed)\n"
+        "- remove_front: Remove first → data_value: {} (no data needed)\n"
+        "- delete_at: Remove at index → data_value: {'index': position}\n"
+        "- push_at: Insert at index → data_value: {'item': new_element, 'index': position}\n"
+        "- update_at: Change at index → data_value: {'item': new_element, 'index': position}\n\n"
+        
+        "**Array_of_pairs Special:**\n"
+        "- update_pair: Modify pair at index → data_value: {'item': {'key': 'key', 'value': 'value'}, 'index': position}\n\n"
+        
+        "Widget Types Available:\n"
+        "- 'daily_todo': Task management with date organization\n"
+        "- 'table': Structured data display in rows/columns\n"
+        "- 'note': Free-form text notes\n"
+        "- 'calendar': Date/schedule management and visualization\n"
+        "- 'text_field': Simple text input field\n"
+        "- 'component_reference': Display/reference other component data\n\n"
+        
+        "Connection Types:\n"
+        "- 'manual': User-triggered connections (default)\n"
+        "- 'automatic': System-triggered based on conditions\n"
+        "- Connections can include data_transfers array for automatic data flow\n\n"
+        
+        "Template System:\n"
+        "- Built-in templates: Use template name (e.g., 'fitness', 'academic')\n"
+        "- Custom templates: Created by users, reusable across subjects\n"
+        "- Templates define complete subject structure with components and widgets\n\n"
+    )
+    
+    # Update the data handling priority section
+    instructions += (
+        "Data Handling Priority (CRITICAL):\n"
+        "1. **PRIMARY SOURCE**: Use the current system data provided above for all factual information\n"
+        "2. **SECONDARY SOURCE**: Use chat history only for conversational context and user preferences\n"
+        "3. **NEVER**: Rely on chat history for component values, widget data, or system state information\n"
+        "4. **ALWAYS**: Verify information against the current data before making statements about the user's system\n"
+        "5. **ID SECURITY**: Never expose internal IDs to users - work with names only in user communication\n\n"
+        
+        "When the user asks about their data:\n"
+        "- Check the current AI-accessible subjects data first\n"
+        "- Reference actual component IDs and values from the live data (but don't show IDs to user)\n"
+        "- If data isn't in AI-accessible subjects, use get_subject_full_data function\n"
+        "- Only mention chat history information if it's about user preferences or conversational context\n"
+        "- Translate user's natural language references to the appropriate IDs from context\n\n"
+        
+        "User Communication Guidelines:\n"
+        "- Always refer to subjects, components, and widgets by their names in responses\n"
+        "- Use natural language: 'your Fitness subject' not 'subject ID abc123'\n"
+        "- If you can't find something: 'I cannot find that item' not 'ID not found'\n"
+        "- Be helpful: 'I'll update your weight in the Fitness subject' not 'updating component_id_xyz'\n\n"
+    )
+    
     # Combine instructions, chat history, context, and user message
     user_prompt = instructions
     if chat_history:
