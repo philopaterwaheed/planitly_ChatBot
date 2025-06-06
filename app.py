@@ -40,7 +40,6 @@ async def call_gemini_api(apikey, content):
             json=content,
             timeout=30
         )
-        print (content)
         data = response.json()
         print('Gemini API response:', data)
         if (data and 
@@ -842,6 +841,62 @@ async def ask_ai(
         "- Be helpful: 'I'll update your weight in the Fitness subject' not 'updating component_id_xyz'\n\n"
     )
     
+    # memery and conflict resolution system instructions
+    instructions += (
+        "Memory and Conflict Resolution System:\n"
+        "You have access to a personal memory system that stores important user information using vector embeddings. "
+        "This allows you to remember and reference things the user has told you in previous conversations.\n\n"
+        
+        "**Storing New Information:**\n"
+        "When the user shares important personal information that should be remembered for future conversations, "
+        "use this format to store it:\n"
+        "<<STORE: information_to_remember | category: category_name>>\n"
+        "Examples:\n"
+        "- User says 'My name is John': <<STORE: User's name is John | category: name>>\n"
+        "- User says 'I work as a software engineer': <<STORE: User works as a software engineer | category: work>>\n"
+        "- User says 'I love hiking and outdoor activities': <<STORE: User enjoys hiking and outdoor activities | category: preferences>>\n\n"
+        
+        "**Resolving Conflicts:**\n"
+        "If the user provides information that conflicts with previously stored information, use this format:\n"
+        "<<RESOLVED: new_correct_information | CONFLICTS_WITH: old_conflicting_information | category: category_name>>\n"
+        "Examples:\n"
+        "- User previously said name was 'John' but now says 'Actually, my name is Jonathan':\n"
+        "  <<RESOLVED: User's name is Jonathan | CONFLICTS_WITH: User's name is John | category: name>>\n"
+        "- User previously said they work as 'teacher' but now says 'I'm actually a software engineer':\n"
+        "  <<RESOLVED: User works as a software engineer | CONFLICTS_WITH: User works as a teacher | category: work>>\n\n"
+        
+        "**Storage Categories:**\n"
+        "Use these categories for organizing stored information:\n"
+        "- 'name': Personal identity information\n"
+        "- 'location': Where the user lives or is from\n"
+        "- 'work': Job, profession, career information\n"
+        "- 'preferences': Likes, dislikes, interests, hobbies\n"
+        "- 'family': Family members, relationships\n"
+        "- 'goals': Personal or professional objectives\n"
+        "- 'health': Health-related information (if shared)\n"
+        "- 'education': School, studies, learning\n"
+        "- 'other': Any other important personal information\n\n"
+        
+        "**When to Store Information:**\n"
+        "Store information when:\n"
+        "- User explicitly shares personal details about themselves\n"
+        "- User corrects previously stored information\n"
+        "- User mentions important preferences or characteristics\n"
+        "- Information would be useful for personalizing future interactions\n\n"
+        
+        "**When NOT to Store:**\n"
+        "Do not store:\n"
+        "- Temporary or session-specific information\n"
+        "- Questions or requests (unless they reveal preferences)\n"
+        "- System-related data (this is handled separately)\n"
+        "- Sensitive information like passwords or financial details\n\n"
+        
+        "**Important Notes:**\n"
+        "- The storage markers (<<STORE>> and <<RESOLVED>>) will be automatically removed from your response to the user\n"
+        "- You can include multiple storage markers in one response if needed\n"
+        "- Always provide a natural response to the user along with any storage markers\n"
+        "- The stored information will be available in future conversations through the retrieval system\n\n"
+    )
     # Combine instructions, chat history, context, and user message
     user_prompt = instructions
     if chat_history:
@@ -853,6 +908,12 @@ async def ask_ai(
         )
         user_prompt += chat_history + "\n"
 
+    user_info = ""
+    if retrieved_data:
+        user_info = "\n".join(
+            f"User: {item['user_message']} (Category: {item['category']}, Vector Score: {item['vector_score']:.4f})"
+            for item in retrieved_data
+        )
     if user_info:
         user_prompt += "\nRelevant knowledge about the user they may have said in previous messages (with relevance score):\n" + user_info + "\n"
 
@@ -943,10 +1004,46 @@ async def ask_ai(
         conflicts_with = resolved_match.group(2).strip()
         resolved_category = resolved_match.group(3).strip() if resolved_match.group(3) else extract_category_from_text(resolved_info)
         print("LLM resolved conflict:", resolved_info, "Conflicts with:", conflicts_with, "Category:", resolved_category)
-        milvus_client.delete(
-            collection_name,
-            filter=f"user_id == '{str(user.id)}' && category == '{resolved_category}' && user_message == '{conflicts_with}'"
-        )
+        
+        # Try to delete the conflicting information
+        try:
+            # First, try to find matching records to see what exists
+            search_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}"'
+            existing_records = milvus_client.query(
+                collection_name,
+                filter=search_filter,
+                output_fields=["user_message", "category"]
+            )
+            
+            print(f"Found {len(existing_records)} records in category '{resolved_category}' for user")
+            
+            # Look for exact or similar matches
+            deleted = False
+            for record in existing_records:
+                stored_message = record.get("user_message", "")
+                # Try exact match first
+                if stored_message == conflicts_with:
+                    delete_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}" && user_message == "{conflicts_with}"'
+                    milvus_client.delete(collection_name, filter=delete_filter)
+                    print(f"Deleted exact match: {stored_message}")
+                    deleted = True
+                    break
+                # Try partial match if exact doesn't work
+                elif conflicts_with.lower() in stored_message.lower() or stored_message.lower() in conflicts_with.lower():
+                    delete_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}" && user_message == "{stored_message}"'
+                    milvus_client.delete(collection_name, filter=delete_filter)
+                    print(f"Deleted similar match: {stored_message}")
+                    deleted = True
+                    break
+            
+            if not deleted:
+                print(f"No matching conflict found to delete. Looking for: '{conflicts_with}'")
+                print("Available messages:", [r.get("user_message") for r in existing_records])
+            
+        except Exception as e:
+            print(f"Error deleting conflicting information: {e}")
+        
+        # Store the new resolved information
         save_message_to_milvus(resolved_info, ai_response, str(user.id), resolved_category)
 
     # Check for store marker (general memory)
@@ -955,7 +1052,7 @@ async def ask_ai(
         store_info = store_match.group(1).strip()
         store_category = store_match.group(2).strip() if store_match.group(2) else extract_category_from_text(store_info)
         print("LLM chose to store:", store_info, "Category:", store_category)
-        save_message_to_milvus(store_info, ai_response, str(user.id), store_category)
+        save_message_to_milvus(store_info, ai_response, str(str(user.id)), store_category)
 
     save_message(message, ai_response, str(user.id))
 
