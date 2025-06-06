@@ -9,9 +9,9 @@ import json
 from dotenv import load_dotenv
 import os
 from mongoengine import DateTimeField
-from models import AIMessage_db ,User, DataTransfer_db, DataTransfer, Subject_db, Subject, Component_db, Component, Connection_db, Connection, Widget, Widget_db, Todo_db, Todo, Category_db, ArrayItem_db, Arrays, CustomTemplate_db , ChatRequest
+from models import AIMessage_db ,User, Subject_db,  ChatRequest
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from consts import available_functions
 from utils.fetch import fetch
 from utils.functions import execute_function_call
@@ -526,7 +526,6 @@ async def ask_ai(
             instructions += f"... and {len(template_names) - 5} more templates\n"
         instructions += "\n"
     
-    # Add function calling instructions
     function_list = format_functions_for_ai(available_functions)
     instructions += (
         "Function Calling Instructions:\n"
@@ -597,7 +596,7 @@ async def ask_ai(
         "- 'str': For text (data: {'item': 'text'})\n"
         "- 'bool': For true/false (data: {'item': true})\n"
         "- 'date': For dates (data: {'item': 'ISO_date_string'})\n"
-        "- 'pair': For key-value pairs (data: {'item': {'key': 'string', 'value': any}, 'type': {'key': 'str', 'value': 'any'}})\n"
+        "- 'pair': For key-value pairs (data: {'item': {'key': 'string', 'value': 'any'}, 'type': {'key': 'str', 'value': 'any'}})\n"
         "- 'Array_type': For arrays of integers (data: {'type': 'int'})\n"
         "- 'Array_generic': For mixed arrays (data: {'type': 'any'})\n"
         "- 'Array_of_strings': For string arrays (data: {'type': 'str'})\n"
@@ -661,164 +660,6 @@ async def ask_ai(
         "- Templates define complete subject structure with components and widgets\n\n"
     )
     
-    instructions += (
-        "Data Handling Priority (CRITICAL):\n"
-        "1. **PRIMARY SOURCE**: Use the current system data provided above for all factual information\n"
-        "2. **SECONDARY SOURCE**: Use chat history only for conversational context and user preferences\n"
-        "3. **NEVER**: Rely on chat history for component values, widget data, or system state information\n"
-        "4. **ALWAYS**: Verify information against the current data before making statements about the user's system\n"
-        "5. **ID SECURITY**: Never expose internal IDs to users - work with names only in user communication\n\n"
-        
-        "When the user asks about their data:\n"
-        "- Check the current AI-accessible subjects data first\n"
-        "- Reference actual component IDs and values from the live data (but don't show IDs to user)\n"
-        "- If data isn't in AI-accessible subjects, use get_subject_full_data function\n"
-        "- Only mention chat history information if it's about user preferences or conversational context\n"
-        "- Translate user's natural language references to the appropriate IDs from context\n\n"
-        
-        "User Communication Guidelines:\n"
-        "- Always refer to subjects, components, and widgets by their names in responses\n"
-        "- Use natural language: 'your Fitness subject' not 'subject ID abc123'\n"
-        "- If you can't find something: 'I cannot find that item' not 'ID not found'\n"
-        "- Be helpful: 'I'll update your weight in the Fitness subject' not 'updating component_id_xyz'\n\n"
-    )
-    
-    # Add function calling instructions
-    function_list = format_functions_for_ai(available_functions)
-    instructions += (
-        "Function Calling Instructions:\n"
-        "You have access to the following functions that you can call when appropriate:\n"
-        f"{function_list}\n\n"
-        "To call a function, use this exact format:\n"
-        "<<FUNCTION_CALL: function_name | parameters: {\"param1\": \"value1\", \"param2\": \"value2\"}>>\n"
-        "Only call functions when the user's request clearly requires that specific functionality. "
-        "Do not call functions unnecessarily. You can call multiple functions if needed.\n"
-        "Always provide a natural response to the user along with any function calls.\n\n"
-        
-        "**CRITICAL ID HANDLING RULES:**\n"
-        "- NEVER ask the user for any IDs (subject_id, component_id, widget_id, etc.)\n"
-        "- NEVER show or mention IDs to the user in your responses\n"
-        "- ONLY use IDs that are provided in the current system data above\n"
-        "- When user refers to subjects/components by name, find the corresponding ID from the context data\n"
-        "- If you cannot find the required ID in the provided data, inform the user that the item doesn't exist or isn't accessible\n"
-        "- IDs are internal system identifiers - users should only work with names\n\n"
-        
-        "Smart Function Usage with System Data:\n"
-        "- When the user asks about existing data, reference the AI-accessible subjects provided\n"
-        "- Use subject IDs from the provided data when calling functions that require them\n"
-        "- When user mentions a subject by name (e.g., 'Fitness'), find its ID from ai_accessible_subjects\n"
-        "- When user mentions a component by name, find its ID from the components list of the relevant subject\n"
-        "- When user mentions a widget by name, find its ID from the widgets list of the relevant subject\n"
-        "- Reference actual component IDs when creating data transfers\n"
-        "- Suggest appropriate categories from the available list\n"
-        "- Recommend relevant templates based on the user's current subjects\n\n"
-        
-        "ID Resolution Examples:\n"
-        "- User says 'update my weight in fitness': Find 'Fitness' subject ID, then find 'Weight' component ID\n"
-        "- User says 'add task to my daily todos': Find subject with daily_todo widget, then use widget ID\n"
-        "- User says 'delete my workout log': Find subject containing 'Workout Log' component, use component ID\n"
-        "- If item not found: 'I cannot find that item in your accessible subjects'\n\n"
-        
-        "Complete Function Categories Available:\n"
-        "**Creation Functions:**\n"
-        "- create_subject: Create new life areas/topics\n"
-        "- add_component_to_subject: Add data attributes to subjects\n"
-        "- create_connection: Link subjects with data flow relationships\n"
-        "- create_category: Organize subjects into categories\n"
-        "- create_data_transfer: Set up automatic data operations between components\n"
-        "- create_widget: Add visual elements (todos, tables, calendars, notes)\n"
-        "- create_custom_template: Create reusable subject templates\n"
-        "- add_todo_to_widget: Add tasks to todo widgets\n\n"
-        
-        "**Data Management Functions:**\n"
-        "- update_component_data: Modify existing component values or names\n"
-        "- get_subject_full_data: Retrieve complete subject information\n\n"
-        
-        "**Deletion Functions:**\n"
-        "- delete_subject: Remove subjects and all their data\n"
-        "- delete_component: Remove components from subjects\n"
-        "- delete_widget: Remove widgets and their data\n"
-        "- delete_connection: Remove subject relationships\n"
-        "- delete_category: Remove categories (subjects become 'Uncategorized')\n"
-        "- delete_data_transfer: Remove automatic data operations\n"
-        "- delete_custom_template: Remove user-created templates\n"
-        "- delete_todo: Remove specific todo items\n"
-        "- delete_notification: Remove system notifications\n\n"
-        
-        "**Access Control Functions:**\n"
-        "- remove_ai_accessible_subject: Remove subjects from AI access list\n\n"
-        
-        "Component Data Types Guide:\n"
-        "When creating components, use these exact type names:\n"
-        "- 'int': For numbers (data: {'item': 123})\n"
-        "- 'str': For text (data: {'item': 'text'})\n"
-        "- 'bool': For true/false (data: {'item': true})\n"
-        "- 'date': For dates (data: {'item': 'ISO_date_string'})\n"
-        "- 'pair': For key-value pairs (data: {'item': {'key': 'string', 'value': any}, 'type': {'key': 'str', 'value': 'any'}})\n"
-        "- 'Array_type': For arrays of integers (data: {'type': 'int'})\n"
-        "- 'Array_generic': For mixed arrays (data: {'type': 'any'})\n"
-        "- 'Array_of_strings': For string arrays (data: {'type': 'str'})\n"
-        "- 'Array_of_booleans': For boolean arrays (data: {'type': 'bool'})\n"
-        "- 'Array_of_dates': For date arrays (data: {'type': 'date'})\n"
-        "- 'Array_of_objects': For object arrays (data: {'type': 'object'})\n"
-        "- 'Array_of_pairs': For pair arrays (data: {'type': {'key': 'str', 'value': 'any'}})\n\n"
-        
-        "Data Transfer System - CRITICAL UNDERSTANDING:\n"
-        "Data transfers are operations that MODIFY the data inside components. They can work in two ways:\n\n"
-        
-        "1. **Component-to-Component Transfer**: Data flows from a source component to target component\n"
-        "   - Use 'source_component_id' parameter with ID from context data\n"
-        "   - The source component's value is used for the operation\n"
-        "   - Example: Transfer mood score from wellness subject to energy component\n\n"
-        
-        "2. **Direct Value Transfer**: A specific value is applied to the target component\n"
-        "   - Use 'data_value' parameter (NO source_component_id)\n"
-        "   - You provide the exact value/operation data\n"
-        "   - Example: Add 10 points to a score, set status to 'completed', append 'new item' to list\n\n"
-        
-        "Data Transfer Operations by Component Type:\n\n"
-        
-        "**Scalar Types (int/str/bool/date):**\n"
-        "- replace: Set new value → data_value: {'item': new_value}\n"
-        "- add (int only): Add to current → data_value: {'item': amount_to_add}\n"
-        "- multiply (int only): Multiply current → data_value: {'item': multiplier}\n"
-        "- toggle (bool only): Flip true/false → data_value: {} (no data needed)\n\n"
-        
-        "**Pair Type:**\n"
-        "- update_key: Change the key → data_value: {'item': {'key': 'new_key'}}\n"
-        "- update_value: Change the value → data_value: {'item': {'value': new_value}}\n\n"
-        
-        "**Array Types (all Array_* types):**\n"
-        "- append: Add to end → data_value: {'item': new_element}\n"
-        "- remove_back: Remove last → data_value: {} (no data needed)\n"
-        "- remove_front: Remove first → data_value: {} (no data needed)\n"
-        "- delete_at: Remove at index → data_value: {'index': position}\n"
-        "- push_at: Insert at index → data_value: {'item': new_element, 'index': position}\n"
-        "- update_at: Change at index → data_value: {'item': new_element, 'index': position}\n\n"
-        
-        "**Array_of_pairs Special:**\n"
-        "- update_pair: Modify pair at index → data_value: {'item': {'key': 'key', 'value': 'value'}, 'index': position}\n\n"
-        
-        "Widget Types Available:\n"
-        "- 'daily_todo': Task management with date organization\n"
-        "- 'table': Structured data display in rows/columns\n"
-        "- 'note': Free-form text notes\n"
-        "- 'calendar': Date/schedule management and visualization\n"
-        "- 'text_field': Simple text input field\n"
-        "- 'component_reference': Display/reference other component data\n\n"
-        
-        "Connection Types:\n"
-        "- 'manual': User-triggered connections (default)\n"
-        "- 'automatic': System-triggered based on conditions\n"
-        "- Connections can include data_transfers array for automatic data flow\n\n"
-        
-        "Template System:\n"
-        "- Built-in templates: Use template name (e.g., 'fitness', 'academic')\n"
-        "- Custom templates: Created by users, reusable across subjects\n"
-        "- Templates define complete subject structure with components and widgets\n\n"
-    )
-    
-    # Update the data handling priority section
     instructions += (
         "Data Handling Priority (CRITICAL):\n"
         "1. **PRIMARY SOURCE**: Use the current system data provided above for all factual information\n"
@@ -847,6 +688,12 @@ async def ask_ai(
         "You have access to a personal memory system that stores important user information using vector embeddings. "
         "This allows you to remember and reference things the user has told you in previous conversations.\n\n"
         
+        "**IMPORTANT: Conflict Resolution Only Affects Memory Storage, NOT Chat History**\n"
+        "When you resolve conflicts, you are ONLY updating the vector database memory system. "
+        "The complete chat history in MongoDB remains untouched and preserved. "
+        "Conflict resolution only removes outdated information from the memory/knowledge base, "
+        "not from the conversational record.\n\n"
+        
         "**Storing New Information:**\n"
         "When the user shares important personal information that should be remembered for future conversations, "
         "use this format to store it:\n"
@@ -857,15 +704,17 @@ async def ask_ai(
         "- User says 'I love hiking and outdoor activities': <<STORE: User enjoys hiking and outdoor activities | category: preferences>>\n\n"
         
         "**Resolving Single Conflicts:**\n"
-        "If the user provides information that conflicts with previously stored information, use this format:\n"
+        "If the user provides information that conflicts with previously stored memory information, use this format:\n"
         "<<RESOLVED: new_correct_information | CONFLICTS_WITH: old_conflicting_information | category: category_name>>\n"
+        "This will ONLY remove the conflicting information from the memory database, preserving all chat history.\n"
         "Examples:\n"
         "- User previously said name was 'John' but now says 'Actually, my name is Jonathan':\n"
         "  <<RESOLVED: User's name is Jonathan | CONFLICTS_WITH: User's name is John | category: name>>\n"
         
         "**Resolving Multiple Conflicts:**\n"
-        "If the user provides information that conflicts with multiple previously stored pieces of information, use this format:\n"
+        "If the user provides information that conflicts with multiple previously stored memory pieces, use this format:\n"
         "<<RESOLVED: new_correct_information | CONFLICTS_WITH_MULTIPLE: [old_info_1, old_info_2, old_info_3] | category: category_name>>\n"
+        "This will ONLY remove the conflicting memory entries from the vector database, keeping chat history intact.\n"
         "Examples:\n"
         "- User previously said they were 'teacher' and 'part-time tutor' but now says 'I'm actually a software engineer':\n"
         "  <<RESOLVED: User works as a software engineer | CONFLICTS_WITH_MULTIPLE: [User works as a teacher, User works as a part-time tutor] | category: work>>\n"
@@ -874,12 +723,22 @@ async def ask_ai(
         
         "**When to Use Multiple Conflicts:**\n"
         "Use CONFLICTS_WITH_MULTIPLE when:\n"
-        "- The user corrects information that contradicts several stored facts\n"
-        "- Multiple related pieces of stored information become outdated\n"
-        "- The user provides a comprehensive update that supersedes multiple previous statements\n\n"
+        "- The user corrects information that contradicts several stored memory facts\n"
+        "- Multiple related pieces of stored memory information become outdated\n"
+        "- The user provides a comprehensive update that supersedes multiple previous memory statements\n\n"
+        
+        "**Memory vs Chat History Distinction:**\n"
+        "- MEMORY SYSTEM (Vector Database): Stores factual information about the user for future reference\n"
+        "  - Subject to updates and conflict resolution\n"
+        "  - Contains distilled user information (name, preferences, etc.)\n"
+        "  - Used for personalization and context in future conversations\n"
+        "- CHAT HISTORY (MongoDB): Complete conversational record\n"
+        "  - NEVER modified or deleted by conflict resolution\n"
+        "  - Preserves exact conversation flow and user interactions\n"
+        "  - Used for immediate conversational context only\n\n"
         
         "**Storage Categories:**\n"
-        "Use these categories for organizing stored information:\n"
+        "Use these categories for organizing stored memory information:\n"
         "- 'name': Personal identity information\n"
         "- 'location': Where the user lives or is from\n"
         "- 'work': Job, profession, career information\n"
@@ -893,7 +752,7 @@ async def ask_ai(
         "**When to Store Information:**\n"
         "Store information when:\n"
         "- User explicitly shares personal details about themselves\n"
-        "- User corrects previously stored information\n"
+        "- User corrects previously stored memory information\n"
         "- User mentions important preferences or characteristics\n"
         "- Information would be useful for personalizing future interactions\n\n"
         
@@ -908,8 +767,10 @@ async def ask_ai(
         "- The storage markers (<<STORE>>, <<RESOLVED>>, etc.) will be automatically removed from your response to the user\n"
         "- You can include multiple storage markers in one response if needed\n"
         "- Always provide a natural response to the user along with any storage markers\n"
-        "- The stored information will be available in future conversations through the retrieval system\n"
-        "- Use square brackets [] for multiple conflicts, comma-separated\n\n"
+        "- The stored memory information will be available in future conversations through the retrieval system\n"
+        "- Use square brackets [] for multiple conflicts, comma-separated\n"
+        "- Conflict resolution affects ONLY the memory system, never the complete chat history\n"
+        "- All conversations remain permanently recorded regardless of memory updates\n\n"
     )
     
     # Combine instructions, chat history, context, and user message
@@ -1044,63 +905,85 @@ async def ask_ai(
                 output_fields=["user_message", "category"]
             )
             
+            print(f"\n=== MILVUS RECORDS DEBUG ===")
             print(f"Found {len(existing_records)} records in category '{resolved_category}' for user")
-            print("Available messages:", [r.get("user_message") for r in existing_records])
+            print(f"Search filter used: {search_filter}")
+            
+            # Print each record with line numbers
+            print(f"\n--- ALL RECORDS IN MILVUS (Category: {resolved_category}) ---")
+            for i, record in enumerate(existing_records, 1):
+                stored_message = record.get("user_message", "")
+                print(f"Line {i}: '{stored_message}'")
+            
+            print(f"\n--- CONFLICTS TO FIND ---")
+            for i, conflict in enumerate(conflicts_list, 1):
+                print(f"Conflict {i}: '{conflict}'")
             
             # Collect all records to delete
             records_to_delete = set()  # Use set to avoid duplicates
             
             # Try to match each conflict
+            print(f"\n--- MATCHING PROCESS ---")
             for conflict_info in conflicts_list:
                 conflict_info = conflict_info.strip()
                 if not conflict_info:
                     continue
                 
-                print(f"Processing conflict: '{conflict_info}'")
+                print(f"\nProcessing conflict: '{conflict_info}'")
+                matches_found = []
                 
                 for record in existing_records:
                     stored_message = record.get("user_message", "")
                     should_delete = False
+                    match_type = ""
                     
                     # Try exact match first
                     if stored_message == conflict_info:
                         should_delete = True
-                        print(f"Found exact match for '{conflict_info}': {stored_message}")
+                        match_type = "EXACT MATCH"
+                        print(f"  ✓ {match_type}: '{stored_message}'")
                     
                     # Try partial match (both directions)
                     elif (conflict_info.lower() in stored_message.lower() or 
                           stored_message.lower() in conflict_info.lower()):
                         should_delete = True
-                        print(f"Found partial match for '{conflict_info}': {stored_message}")
-                    
-                    # Category-specific matching
-                    elif resolved_category == "name" and "name" in stored_message.lower():
-                        # For names, be more aggressive - if it's a name record, consider it for deletion
-                        should_delete = True
-                        print(f"Found name-related match for '{conflict_info}': {stored_message}")
+                        match_type = "PARTIAL MATCH"
+                        print(f"  ✓ {match_type}: '{stored_message}'")
                     
                     if should_delete:
                         records_to_delete.add(stored_message)
+                        matches_found.append(f"{match_type}: '{stored_message}'")
+                
+                if not matches_found:
+                    print(f"  ✗ No matches found for: '{conflict_info}'")
+                else:
+                    print(f"  Found {len(matches_found)} matches for '{conflict_info}'")
             
-            # If no specific matches found but we have conflicts, and it's a category like 'name'
-            # where the user is providing definitive new information, delete all in category
-            if not records_to_delete and existing_records and resolved_category in ["name", "location"]:
-                print(f"No specific matches found, but user provided definitive {resolved_category} info. Deleting all records in category.")
-                for record in existing_records:
-                    records_to_delete.add(record.get("user_message", ""))
+            print(f"\n--- RECORDS IDENTIFIED FOR DELETION ---")
+            if records_to_delete:
+                for i, record in enumerate(sorted(records_to_delete), 1):
+                    print(f"DELETE {i}: '{record}'")
+            else:
+                print("No records identified for deletion")
             
             # Delete all identified records
             total_deleted = 0
+            print(f"\n--- DELETION PROCESS ---")
             for message_to_delete in records_to_delete:
                 try:
                     delete_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}" && user_message == "{message_to_delete}"'
-                    milvus_client.delete(collection_name, filter=delete_filter)
-                    print(f"Successfully deleted: {message_to_delete}")
+                    print(f"Attempting to delete with filter: {delete_filter}")
+                    result = milvus_client.delete(collection_name, filter=delete_filter)
+                    print(f"✓ Successfully deleted: '{message_to_delete}' - Result: {result}")
                     total_deleted += 1
                 except Exception as delete_error:
-                    print(f"Error deleting specific record '{message_to_delete}': {delete_error}")
+                    print(f"✗ Error deleting '{message_to_delete}': {delete_error}")
             
-            print(f"Total conflicts deleted: {total_deleted} out of {len(conflicts_list)} requested conflicts")
+            print(f"\n=== DELETION SUMMARY ===")
+            print(f"Total conflicts requested: {len(conflicts_list)}")
+            print(f"Records identified for deletion: {len(records_to_delete)}")
+            print(f"Successfully deleted: {total_deleted}")
+            print(f"===========================\n")
                     
         except Exception as e:
             print(f"Error processing multiple conflicts: {e}")
@@ -1108,7 +991,7 @@ async def ask_ai(
         # Store the new resolved information
         save_message_to_milvus(resolved_info, ai_response, str(user.id), resolved_category)
     
-    # Handle single conflict (existing logic)
+    # Handle single conflict
     elif resolved_single_match:
         resolved_info = resolved_single_match.group(1).strip()
         conflicts_with = resolved_single_match.group(2).strip()
@@ -1125,73 +1008,69 @@ async def ask_ai(
                 output_fields=["user_message", "category"]
             )
             
+            print(f"\n=== SINGLE CONFLICT DEBUG ===")
             print(f"Found {len(existing_records)} records in category '{resolved_category}' for user")
-            print("Available messages:", [r.get("user_message") for r in existing_records])
+            print(f"Search filter used: {search_filter}")
             print(f"Looking for conflict: '{conflicts_with}'")
             
-            # Enhanced matching logic
-            deleted_count = 0
+            # Print each record with line numbers
+            print(f"\n--- ALL RECORDS IN MILVUS (Category: {resolved_category}) ---")
+            for i, record in enumerate(existing_records, 1):
+                stored_message = record.get("user_message", "")
+                print(f"Line {i}: '{stored_message}'")
+            
+            # Find matching records
+            print(f"\n--- MATCHING PROCESS ---")
             records_to_delete = []
             
             for record in existing_records:
                 stored_message = record.get("user_message", "")
                 should_delete = False
+                match_type = ""
                 
                 # Try exact match first
                 if stored_message == conflicts_with:
                     should_delete = True
-                    print(f"Found exact match: {stored_message}")
+                    match_type = "EXACT MATCH"
+                    print(f"  ✓ {match_type}: '{stored_message}'")
                 
-                # Try partial match (both directions)
-                elif conflicts_with.lower() in stored_message.lower() or stored_message.lower() in conflicts_with.lower():
+                # Try partial match (both directions) - case insensitive
+                elif (conflicts_with.lower() in stored_message.lower() or 
+                      stored_message.lower() in conflicts_with.lower()):
                     should_delete = True
-                    print(f"Found partial match: {stored_message}")
-                
-                # For name conflicts, try extracting the actual name and comparing
-                elif resolved_category == "name":
-                    # Extract name from stored message
-                    stored_name_match = re.search(r"(?:name is|called)\s+(.+)$", stored_message.lower())
-                    conflict_name_match = re.search(r"(?:name is|called)\s+(.+)$", conflicts_with.lower())
-                    
-                    if stored_name_match and conflict_name_match:
-                        stored_name = stored_name_match.group(1).strip()
-                        conflict_name = conflict_name_match.group(1).strip()
-                        if stored_name == conflict_name:
-                            should_delete = True
-                            print(f"Found name match: {stored_message} (extracted: {stored_name})")
-                
-                # For this specific case, if it's about names and conflicts, delete ALL name records
-                # since the user is providing a new definitive name
-                elif resolved_category == "name" and "name" in stored_message.lower():
-                    should_delete = True
-                    print(f"Deleting name-related record for fresh start: {stored_message}")
+                    match_type = "PARTIAL MATCH"
+                    print(f"  ✓ {match_type}: '{stored_message}'")
                 
                 if should_delete:
                     records_to_delete.append(stored_message)
             
+            print(f"\n--- RECORDS IDENTIFIED FOR DELETION ---")
+            if records_to_delete:
+                for i, record in enumerate(records_to_delete, 1):
+                    print(f"DELETE {i}: '{record}'")
+            else:
+                print("No records identified for deletion")
+            
             # Delete the identified records
+            deleted_count = 0
+            print(f"\n--- DELETION PROCESS ---")
             for message_to_delete in records_to_delete:
                 try:
                     delete_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}" && user_message == "{message_to_delete}"'
-                    milvus_client.delete(collection_name, filter=delete_filter)
-                    print(f"Successfully deleted: {message_to_delete}")
+                    print(f"Attempting to delete with filter: {delete_filter}")
+                    result = milvus_client.delete(collection_name, filter=delete_filter)
+                    print(f"✓ Successfully deleted: '{message_to_delete}' - Result: {result}")
                     deleted_count += 1
                 except Exception as delete_error:
-                    print(f"Error deleting specific record '{message_to_delete}': {delete_error}")
+                    print(f"✗ Error deleting '{message_to_delete}': {delete_error}")
             
+            print(f"\n=== DELETION SUMMARY ===")
+            print(f"Conflict to find: '{conflicts_with}'")
+            print(f"Records identified for deletion: {len(records_to_delete)}")
+            print(f"Successfully deleted: {deleted_count}")
             if deleted_count == 0:
-                print(f"No matching conflicts found to delete.")
-                # Optional: If it's a name conflict and we found name records, delete them anyway
-                if resolved_category == "name" and existing_records:
-                    print("Attempting to delete all name records for clean slate...")
-                    try:
-                        delete_all_filter = f'user_id == "{str(user.id)}" && category == "name"'
-                        milvus_client.delete(collection_name, filter=delete_all_filter)
-                        print("Deleted all name records for fresh start")
-                    except Exception as e:
-                        print(f"Error deleting all name records: {e}")
-            else:
-                print(f"Successfully deleted {deleted_count} conflicting records")
+                print("⚠️  No matching conflicts found to delete")
+            print(f"===========================\n")
             
         except Exception as e:
             print(f"Error deleting conflicting information: {e}")
@@ -1199,20 +1078,21 @@ async def ask_ai(
         # Store the new resolved information
         save_message_to_milvus(resolved_info, ai_response, str(user.id), resolved_category)
 
-    # Check for store marker (general memory)
-    store_match = re.search(r"<<STORE:(.*?)(?:\|category:(.*?))?>>", ai_response, re.DOTALL)
+    # Check for store marker (general memory) - Fixed regex pattern
+    store_match = re.search(r"<<STORE:\s*(.*?)\s*\|\s*category:\s*(.*?)>>", ai_response, re.DOTALL | re.IGNORECASE)
     if store_match:
         store_info = store_match.group(1).strip()
         store_category = store_match.group(2).strip() if store_match.group(2) else extract_category_from_text(store_info)
         print("LLM chose to store:", store_info, "Category:", store_category)
-        save_message_to_milvus(store_info, ai_response, str(str(user.id)), store_category)
+        save_message_to_milvus(store_info, ai_response, str(user.id), store_category)
 
     save_message(message, ai_response, str(user.id))
 
-    # Remove the markers from the response shown to the user (updated to handle multiple conflicts)
-    ai_response_clean = re.sub(r"<<STORE:.*?>>", "", ai_response, flags=re.DOTALL)
-    ai_response_clean = re.sub(r"<<RESOLVED:.*?>>", "", ai_response_clean, flags=re.DOTALL)
-    ai_response_clean = re.sub(r"<<FUNCTION_CALL:.*?>>", "", ai_response_clean, flags=re.DOTALL)
+    # Remove the markers from the response shown to the user (updated to handle all markers)
+    ai_response_clean = re.sub(r"<<STORE:\s*.*?\s*\|\s*category:\s*.*?>>", "", ai_response, flags=re.DOTALL | re.IGNORECASE)
+    ai_response_clean = re.sub(r"<<RESOLVED:\s*.*?\s*\|\s*CONFLICTS_WITH_MULTIPLE:\s*\[.*?\]\s*\|\s*category:\s*.*?>>", "", ai_response_clean, flags=re.DOTALL | re.IGNORECASE)
+    ai_response_clean = re.sub(r"<<RESOLVED:\s*.*?\s*\|\s*CONFLICTS_WITH:\s*.*?\s*\|\s*category:\s*.*?>>", "", ai_response_clean, flags=re.DOTALL | re.IGNORECASE)
+    ai_response_clean = re.sub(r"<<FUNCTION_CALL:\s*.*?\s*\|\s*parameters:\s*{.*?}>>", "", ai_response_clean, flags=re.DOTALL | re.IGNORECASE)
     ai_response_clean = ai_response_clean.strip()
     
     return {
