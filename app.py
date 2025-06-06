@@ -66,6 +66,7 @@ async def call_gemini_api(apikey, content):
             json=content,
             timeout=30
         )
+        print (content)
         data = response.json()
         print('Gemini API response:', data)
         if (data and 
