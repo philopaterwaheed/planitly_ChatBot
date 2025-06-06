@@ -534,7 +534,7 @@ async def ask_ai(
         f"{function_list}\n\n"
         "To call a function, use this exact format:\n"
         "<<FUNCTION_CALL: function_name | parameters: {\"param1\": \"value1\", \"param2\": \"value2\"}>>\n"
-        "Only call functions when the user's request clearly requires that specific functionality. "
+        "Only call a function when the user's request clearly requires that specific functionality. "
         "Do not call functions unnecessarily. You can call multiple functions if needed.\n"
         "Always provide a natural response to the user along with any function calls.\n\n"
         
@@ -856,14 +856,27 @@ async def ask_ai(
         "- User says 'I work as a software engineer': <<STORE: User works as a software engineer | category: work>>\n"
         "- User says 'I love hiking and outdoor activities': <<STORE: User enjoys hiking and outdoor activities | category: preferences>>\n\n"
         
-        "**Resolving Conflicts:**\n"
+        "**Resolving Single Conflicts:**\n"
         "If the user provides information that conflicts with previously stored information, use this format:\n"
         "<<RESOLVED: new_correct_information | CONFLICTS_WITH: old_conflicting_information | category: category_name>>\n"
         "Examples:\n"
         "- User previously said name was 'John' but now says 'Actually, my name is Jonathan':\n"
         "  <<RESOLVED: User's name is Jonathan | CONFLICTS_WITH: User's name is John | category: name>>\n"
-        "- User previously said they work as 'teacher' but now says 'I'm actually a software engineer':\n"
-        "  <<RESOLVED: User works as a software engineer | CONFLICTS_WITH: User works as a teacher | category: work>>\n\n"
+        
+        "**Resolving Multiple Conflicts:**\n"
+        "If the user provides information that conflicts with multiple previously stored pieces of information, use this format:\n"
+        "<<RESOLVED: new_correct_information | CONFLICTS_WITH_MULTIPLE: [old_info_1, old_info_2, old_info_3] | category: category_name>>\n"
+        "Examples:\n"
+        "- User previously said they were 'teacher' and 'part-time tutor' but now says 'I'm actually a software engineer':\n"
+        "  <<RESOLVED: User works as a software engineer | CONFLICTS_WITH_MULTIPLE: [User works as a teacher, User works as a part-time tutor] | category: work>>\n"
+        "- User previously said they lived in 'New York' and 'Manhattan' but now says 'I actually live in Boston':\n"
+        "  <<RESOLVED: User lives in Boston | CONFLICTS_WITH_MULTIPLE: [User lives in New York, User lives in Manhattan] | category: location>>\n\n"
+        
+        "**When to Use Multiple Conflicts:**\n"
+        "Use CONFLICTS_WITH_MULTIPLE when:\n"
+        "- The user corrects information that contradicts several stored facts\n"
+        "- Multiple related pieces of stored information become outdated\n"
+        "- The user provides a comprehensive update that supersedes multiple previous statements\n\n"
         
         "**Storage Categories:**\n"
         "Use these categories for organizing stored information:\n"
@@ -892,11 +905,13 @@ async def ask_ai(
         "- Sensitive information like passwords or financial details\n\n"
         
         "**Important Notes:**\n"
-        "- The storage markers (<<STORE>> and <<RESOLVED>>) will be automatically removed from your response to the user\n"
+        "- The storage markers (<<STORE>>, <<RESOLVED>>, etc.) will be automatically removed from your response to the user\n"
         "- You can include multiple storage markers in one response if needed\n"
         "- Always provide a natural response to the user along with any storage markers\n"
-        "- The stored information will be available in future conversations through the retrieval system\n\n"
+        "- The stored information will be available in future conversations through the retrieval system\n"
+        "- Use square brackets [] for multiple conflicts, comma-separated\n\n"
     )
+    
     # Combine instructions, chat history, context, and user message
     user_prompt = instructions
     if chat_history:
@@ -994,16 +1009,111 @@ async def ask_ai(
         except Exception as e:
             print(f"Error refreshing system data: {e}")
 
-    # Check for resolved marker (conflict resolution)
-    resolved_match = re.search(
+    # Check for resolved marker (conflict resolution) - Updated to handle multiple conflicts
+    # First check for multiple conflicts
+    resolved_multiple_match = re.search(
+        r"<<RESOLVED:\s*(.*?)\s*\|\s*CONFLICTS_WITH_MULTIPLE:\s*\[(.*?)\]\s*\|\s*category:\s*(.*?)>>",
+        ai_response, re.DOTALL | re.IGNORECASE
+    )
+    
+    # Then check for single conflict
+    resolved_single_match = re.search(
         r"<<RESOLVED:\s*(.*?)\s*\|\s*CONFLICTS_WITH:\s*(.*?)\s*\|\s*category:\s*(.*?)>>",
         ai_response, re.DOTALL | re.IGNORECASE
     )
-    if resolved_match:
-        resolved_info = resolved_match.group(1).strip()
-        conflicts_with = resolved_match.group(2).strip()
-        resolved_category = resolved_match.group(3).strip() if resolved_match.group(3) else extract_category_from_text(resolved_info)
-        print("LLM resolved conflict:", resolved_info, "Conflicts with:", conflicts_with, "Category:", resolved_category)
+    
+    # Handle multiple conflicts
+    if resolved_multiple_match:
+        resolved_info = resolved_multiple_match.group(1).strip()
+        conflicts_raw = resolved_multiple_match.group(2).strip()
+        resolved_category = resolved_multiple_match.group(3).strip() if resolved_multiple_match.group(3) else extract_category_from_text(resolved_info)
+        
+        # Parse the conflicts list - split by comma and clean up
+        conflicts_list = [conflict.strip() for conflict in conflicts_raw.split(',')]
+        
+        print(f"LLM resolved multiple conflicts: {resolved_info}")
+        print(f"Conflicts with: {conflicts_list}")
+        print(f"Category: {resolved_category}")
+        
+        # Get all existing records first
+        try:
+            search_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}"'
+            existing_records = milvus_client.query(
+                collection_name,
+                filter=search_filter,
+                output_fields=["user_message", "category"]
+            )
+            
+            print(f"Found {len(existing_records)} records in category '{resolved_category}' for user")
+            print("Available messages:", [r.get("user_message") for r in existing_records])
+            
+            # Collect all records to delete
+            records_to_delete = set()  # Use set to avoid duplicates
+            
+            # Try to match each conflict
+            for conflict_info in conflicts_list:
+                conflict_info = conflict_info.strip()
+                if not conflict_info:
+                    continue
+                
+                print(f"Processing conflict: '{conflict_info}'")
+                
+                for record in existing_records:
+                    stored_message = record.get("user_message", "")
+                    should_delete = False
+                    
+                    # Try exact match first
+                    if stored_message == conflict_info:
+                        should_delete = True
+                        print(f"Found exact match for '{conflict_info}': {stored_message}")
+                    
+                    # Try partial match (both directions)
+                    elif (conflict_info.lower() in stored_message.lower() or 
+                          stored_message.lower() in conflict_info.lower()):
+                        should_delete = True
+                        print(f"Found partial match for '{conflict_info}': {stored_message}")
+                    
+                    # Category-specific matching
+                    elif resolved_category == "name" and "name" in stored_message.lower():
+                        # For names, be more aggressive - if it's a name record, consider it for deletion
+                        should_delete = True
+                        print(f"Found name-related match for '{conflict_info}': {stored_message}")
+                    
+                    if should_delete:
+                        records_to_delete.add(stored_message)
+            
+            # If no specific matches found but we have conflicts, and it's a category like 'name'
+            # where the user is providing definitive new information, delete all in category
+            if not records_to_delete and existing_records and resolved_category in ["name", "location"]:
+                print(f"No specific matches found, but user provided definitive {resolved_category} info. Deleting all records in category.")
+                for record in existing_records:
+                    records_to_delete.add(record.get("user_message", ""))
+            
+            # Delete all identified records
+            total_deleted = 0
+            for message_to_delete in records_to_delete:
+                try:
+                    delete_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}" && user_message == "{message_to_delete}"'
+                    milvus_client.delete(collection_name, filter=delete_filter)
+                    print(f"Successfully deleted: {message_to_delete}")
+                    total_deleted += 1
+                except Exception as delete_error:
+                    print(f"Error deleting specific record '{message_to_delete}': {delete_error}")
+            
+            print(f"Total conflicts deleted: {total_deleted} out of {len(conflicts_list)} requested conflicts")
+                    
+        except Exception as e:
+            print(f"Error processing multiple conflicts: {e}")
+        
+        # Store the new resolved information
+        save_message_to_milvus(resolved_info, ai_response, str(user.id), resolved_category)
+    
+    # Handle single conflict (existing logic)
+    elif resolved_single_match:
+        resolved_info = resolved_single_match.group(1).strip()
+        conflicts_with = resolved_single_match.group(2).strip()
+        resolved_category = resolved_single_match.group(3).strip() if resolved_single_match.group(3) else extract_category_from_text(resolved_info)
+        print("LLM resolved single conflict:", resolved_info, "Conflicts with:", conflicts_with, "Category:", resolved_category)
         
         # Try to delete the conflicting information
         try:
@@ -1016,29 +1126,72 @@ async def ask_ai(
             )
             
             print(f"Found {len(existing_records)} records in category '{resolved_category}' for user")
+            print("Available messages:", [r.get("user_message") for r in existing_records])
+            print(f"Looking for conflict: '{conflicts_with}'")
             
-            # Look for exact or similar matches
-            deleted = False
+            # Enhanced matching logic
+            deleted_count = 0
+            records_to_delete = []
+            
             for record in existing_records:
                 stored_message = record.get("user_message", "")
+                should_delete = False
+                
                 # Try exact match first
                 if stored_message == conflicts_with:
-                    delete_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}" && user_message == "{conflicts_with}"'
-                    milvus_client.delete(collection_name, filter=delete_filter)
-                    print(f"Deleted exact match: {stored_message}")
-                    deleted = True
-                    break
-                # Try partial match if exact doesn't work
+                    should_delete = True
+                    print(f"Found exact match: {stored_message}")
+                
+                # Try partial match (both directions)
                 elif conflicts_with.lower() in stored_message.lower() or stored_message.lower() in conflicts_with.lower():
-                    delete_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}" && user_message == "{stored_message}"'
-                    milvus_client.delete(collection_name, filter=delete_filter)
-                    print(f"Deleted similar match: {stored_message}")
-                    deleted = True
-                    break
+                    should_delete = True
+                    print(f"Found partial match: {stored_message}")
+                
+                # For name conflicts, try extracting the actual name and comparing
+                elif resolved_category == "name":
+                    # Extract name from stored message
+                    stored_name_match = re.search(r"(?:name is|called)\s+(.+)$", stored_message.lower())
+                    conflict_name_match = re.search(r"(?:name is|called)\s+(.+)$", conflicts_with.lower())
+                    
+                    if stored_name_match and conflict_name_match:
+                        stored_name = stored_name_match.group(1).strip()
+                        conflict_name = conflict_name_match.group(1).strip()
+                        if stored_name == conflict_name:
+                            should_delete = True
+                            print(f"Found name match: {stored_message} (extracted: {stored_name})")
+                
+                # For this specific case, if it's about names and conflicts, delete ALL name records
+                # since the user is providing a new definitive name
+                elif resolved_category == "name" and "name" in stored_message.lower():
+                    should_delete = True
+                    print(f"Deleting name-related record for fresh start: {stored_message}")
+                
+                if should_delete:
+                    records_to_delete.append(stored_message)
             
-            if not deleted:
-                print(f"No matching conflict found to delete. Looking for: '{conflicts_with}'")
-                print("Available messages:", [r.get("user_message") for r in existing_records])
+            # Delete the identified records
+            for message_to_delete in records_to_delete:
+                try:
+                    delete_filter = f'user_id == "{str(user.id)}" && category == "{resolved_category}" && user_message == "{message_to_delete}"'
+                    milvus_client.delete(collection_name, filter=delete_filter)
+                    print(f"Successfully deleted: {message_to_delete}")
+                    deleted_count += 1
+                except Exception as delete_error:
+                    print(f"Error deleting specific record '{message_to_delete}': {delete_error}")
+            
+            if deleted_count == 0:
+                print(f"No matching conflicts found to delete.")
+                # Optional: If it's a name conflict and we found name records, delete them anyway
+                if resolved_category == "name" and existing_records:
+                    print("Attempting to delete all name records for clean slate...")
+                    try:
+                        delete_all_filter = f'user_id == "{str(user.id)}" && category == "name"'
+                        milvus_client.delete(collection_name, filter=delete_all_filter)
+                        print("Deleted all name records for fresh start")
+                    except Exception as e:
+                        print(f"Error deleting all name records: {e}")
+            else:
+                print(f"Successfully deleted {deleted_count} conflicting records")
             
         except Exception as e:
             print(f"Error deleting conflicting information: {e}")
@@ -1056,7 +1209,7 @@ async def ask_ai(
 
     save_message(message, ai_response, str(user.id))
 
-    # Remove the markers from the response shown to the user
+    # Remove the markers from the response shown to the user (updated to handle multiple conflicts)
     ai_response_clean = re.sub(r"<<STORE:.*?>>", "", ai_response, flags=re.DOTALL)
     ai_response_clean = re.sub(r"<<RESOLVED:.*?>>", "", ai_response_clean, flags=re.DOTALL)
     ai_response_clean = re.sub(r"<<FUNCTION_CALL:.*?>>", "", ai_response_clean, flags=re.DOTALL)
