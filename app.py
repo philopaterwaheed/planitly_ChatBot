@@ -677,8 +677,21 @@ async def ask_ai(
         "   - You provide the exact value/operation data\n"
         "   - Example: Add 10 points to a score, set status to 'completed', append 'new item' to list\n\n"
         
-        "Data Transfer Operations by Component Type:\n\n"
+        "**SPECIAL FORMATTING FOR FINANCIAL TRACKER:**\n"
+        "When adding data to Financial Tracker's Income or Expenses arrays, use this EXACT format:\n"
+        "- Format: \"amount;date\" (amount semicolon date)\n"
+        "- Examples: \"500;2025-01-15\", \"$1200.50;2025-01-20\", \"75;2025-01-10\"\n"
+        "- Date format: YYYY-MM-DD preferred\n"
+        "- When user says 'I earned $500 today', format as: \"500;2025-01-15\" (using today's date)\n"
+        "- When user says 'I spent $75 on gas yesterday', calculate yesterday's date\n"
+        "- Always include both amount and date separated by semicolon\n\n"
         
+        "Financial Tracker Examples:\n"
+        "- User: 'I got paid $2000 today' → append to Income: data_value: {'item': '2000;2025-01-15'}\n"
+        "- User: 'I spent $75 on gas yesterday' → append to Expenses: data_value: {'item': '75;2025-01-14'}\n"
+        "- User: 'Add $500 income from freelance work on January 10th' → data_value: {'item': '500;2025-01-10'}\n\n"
+        
+        "Data Transfer Operations by Component Type:\n\n"
         "**Scalar Types (int/str/bool/date):**\n"
         "- replace: Set new value → data_value: {'item': new_value}\n"
         "- add (int only): Add to current → data_value: {'item': amount_to_add}\n"
