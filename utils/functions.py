@@ -1,5 +1,9 @@
-from models import AIMessage_db ,User, DataTransfer_db, DataTransfer, Subject_db, Subject, Component_db, Component, Connection_db, Connection, Widget, Widget_db, Todo_db, Todo, Category_db, ArrayItem_db, Arrays, CustomTemplate_db , ChatRequest
+from models import User, DataTransfer_db, DataTransfer, Subject_db, Subject, Component_db,  Connection_db, Connection, Widget, Widget_db, Todo_db, Todo, Category_db,  Arrays, CustomTemplate_db , Notification_db , NotificationCount , TEMPLATES
 from datetime import datetime, timedelta, timezone
+from utils.habit_tracker import HabitTrackerManager
+from models.subject import Subject
+from models.arrayItem import Arrays
+
 async def execute_function_call(function_name: str, arguments: dict, user: User):
     """
     Execute function calls requested by the AI
@@ -526,6 +530,211 @@ async def execute_function_call(function_name: str, arguments: dict, user: User)
             
             notification.delete()
             return {"success": True, "message": "Notification deleted successfully"}
+        
+        elif function_name == "create_habit":
+            name = arguments.get("name")
+            description = arguments.get("description")
+            frequency = arguments.get("frequency", "Daily")
+            add_to_tracker = arguments.get("add_to_tracker", True)
+            
+            # Create habit subject using the habit template
+            subject = Subject(
+                name=name,
+                owner=str(user.id),
+                template="habit",
+                category="Personal Development"
+            )
+            
+            # Apply the habit template
+            await subject.apply_template("habit")
+            
+            # Update the description if provided
+            if description:
+                for comp in subject.components:
+                    if comp.name == "Description":
+                        comp.data["item"] = description
+                        break
+            
+            # Update frequency if provided
+            for comp in subject.components:
+                if comp.name == "Frequency":
+                    comp.data["item"] = frequency
+                    break
+            
+            # Save the habit subject
+            subject.save_to_db()
+            habit_id = str(subject.id)
+            
+            print(f"Created habit subject: {name} with ID: {habit_id}")
+            
+            # Add to habit tracker if requested
+            if add_to_tracker:
+                # Call the add_habit_to_tracker function logic
+                add_result = await execute_function_call("add_habit_to_tracker", {"habit_id": habit_id}, user)
+                if not add_result["success"]:
+                    return {
+                        "success": False,
+                        "message": f"Habit created but failed to add to tracker: {add_result['message']}",
+                        "habit_id": habit_id
+                    }
+            
+            return {
+                "success": True,
+                "message": f"Habit '{name}' created successfully" + (" and added to tracker" if add_to_tracker else ""),
+                "habit_id": habit_id
+            }
+        
+        elif function_name == "add_habit_to_tracker":
+            habit_id = arguments.get("habit_id")
+            
+            # Validate that the subject exists and has habit template
+            habit_subject = Subject_db.objects(id=habit_id, owner=str(user.id)).first()
+            
+            if not habit_subject:
+                return {"success": False, "message": "Habit subject not found"}
+            
+            if habit_subject.template != "habit":
+                return {"success": False, "message": "Subject is not a habit template"}
+            
+            # Get or create habit tracker
+            habit_tracker = await HabitTrackerManager.get_or_create_habit_tracker(str(user.id))
+            
+            # Check if habit is already in tracker
+            habits_result = Arrays.get_array_by_name(
+                user_id=str(user.id),
+                host_id=str(habit_tracker.id),
+                array_name="habits",
+                host_type="subject"
+            )
+            
+            if habits_result["success"]:
+                existing_habits = [item["value"] for item in habits_result["array"]]
+                if habit_id in existing_habits:
+                    return {"success": False, "message": "Habit is already in tracker"}
+            
+            # Add habit to tracker
+            append_result = Arrays.append_to_array(
+                user_id=str(user.id),
+                host_id=str(habit_tracker.id),
+                value=habit_id,
+                host_type="subject",
+                array_name="habits"
+            )
+            
+            if append_result["success"]:
+                # Also add to daily status with false status
+                Arrays.append_to_array(
+                    user_id=str(user.id),
+                    host_id=str(habit_tracker.id),
+                    value={"key": habit_id, "value": False},
+                    host_type="subject",
+                    array_name="daily_status"
+                )
+                
+                return {
+                    "success": True,
+                    "message": f"Habit '{habit_subject.name}' added to tracker successfully"
+                }
+            else:
+                return {"success": False, "message": "Failed to add habit to tracker"}
+        
+        elif function_name == "remove_habit_from_tracker":
+            habit_id = arguments.get("habit_id")
+            
+            # Get habit tracker
+            habit_tracker = await HabitTrackerManager.get_or_create_habit_tracker(str(user.id))
+            
+            # Find and remove from habits array
+            habits_result = Arrays.get_array_by_name(
+                user_id=str(user.id),
+                host_id=str(habit_tracker.id),
+                array_name="habits",
+                host_type="subject"
+            )
+            
+            if not habits_result["success"]:
+                return {"success": False, "message": "Could not access habits array"}
+            
+            # Find the index of the habit
+            habit_index = None
+            for i, item in enumerate(habits_result["array"]):
+                if item["value"] == habit_id:
+                    habit_index = i
+                    break
+            
+            if habit_index is None:
+                return {"success": False, "message": "Habit not found in tracker"}
+            
+            # Remove from habits array
+            Arrays.delete_at_index(
+                user_id=str(user.id),
+                host_id=str(habit_tracker.id),
+                index=habit_index,
+                host_type="subject",
+                array_name="habits"
+            )
+            
+            # Remove from daily status
+            daily_status_result = Arrays.get_array_by_name(
+                user_id=str(user.id),
+                host_id=str(habit_tracker.id),
+                array_name="daily_status",
+                host_type="subject"
+            )
+            
+            if daily_status_result["success"]:
+                for i, item in enumerate(daily_status_result["array"]):
+                    if item["value"]["key"] == habit_id:
+                        Arrays.delete_at_index(
+                            user_id=str(user.id),
+                            host_id=str(habit_tracker.id),
+                            index=i,
+                            host_type="subject",
+                            array_name="daily_status"
+                        )
+                        break
+            
+            return {"success": True, "message": "Habit removed from tracker successfully"}
+        
+        elif function_name == "mark_habit_complete":
+            habit_id = arguments.get("habit_id")
+            completed = arguments.get("completed")
+            
+            result = await HabitTrackerManager.mark_habit_done(str(user.id), habit_id, completed)
+            
+            if result:
+                status = "completed" if completed else "not completed"
+                return {
+                    "success": True,
+                    "message": f"Habit marked as {status} for today"
+                }
+            else:
+                return {"success": False, "message": "Failed to update habit status"}
+        
+        elif function_name == "get_daily_habits_status":
+            date = arguments.get("date")
+            
+            result = await HabitTrackerManager.get_daily_habits_status(str(user.id), date)
+            
+            return {
+                "success": True,
+                "data": result,
+                "message": f"Retrieved habits status for {date or 'today'}"
+            }
+        
+        elif function_name == "get_habit_tracker_data":
+            # Get habit tracker
+            habit_tracker = await HabitTrackerManager.get_or_create_habit_tracker(str(user.id))
+            
+            # Get full data using Subject helper
+            subject = Subject.from_db(habit_tracker)
+            full_data = await subject.get_full_data()
+            
+            return {
+                "success": True,
+                "data": full_data,
+                "message": "Habit tracker data retrieved successfully"
+            }
         
         else:
             return {"success": False, "message": f"Unknown function: {function_name}"}

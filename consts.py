@@ -167,5 +167,49 @@ available_functions=[
                 "parameters": {
                     "notification_id": "ID of the notification to delete (required)"
                 }
+            },
+            {
+                "name": "create_habit",
+                "description": "Create a new habit subject and optionally add it to the habit tracker",
+                "parameters": {
+                    "name": "Habit name (required)",
+                    "description": "Habit description (optional)",
+                    "frequency": "Habit frequency like 'Daily', 'Weekly' (optional, defaults to 'Daily')",
+                    "add_to_tracker": "Whether to add to habit tracker (boolean, optional, defaults to true)"
+                }
+            },
+            {
+                "name": "add_habit_to_tracker",
+                "description": "Add an existing habit subject to the habit tracker",
+                "parameters": {
+                    "habit_id": "ID of the habit subject to add (required)"
+                }
+            },
+            {
+                "name": "remove_habit_from_tracker",
+                "description": "Remove a habit from the habit tracker (does not delete the habit subject)",
+                "parameters": {
+                    "habit_id": "ID of the habit subject to remove (required)"
+                }
+            },
+            {
+                "name": "mark_habit_complete",
+                "description": "Mark a habit as completed or not completed for today",
+                "parameters": {
+                    "habit_id": "ID of the habit subject (required)",
+                    "completed": "Whether habit is completed (boolean, required)"
+                }
+            },
+            {
+                "name": "get_daily_habits_status",
+                "description": "Get all habits and their completion status for a specific date",
+                "parameters": {
+                    "date": "Date in YYYY-MM-DD format (optional, defaults to today)"
+                }
+            },
+            {
+                "name": "get_habit_tracker_data",
+                "description": "Get complete habit tracker data including all habits and their status",
+                "parameters": {}
             }
         ]

@@ -19,19 +19,22 @@ class Subject_db(Document):
     template = StringField(required=False)
     is_deletable = BooleanField(default=True)
     category = StringField(required=False)  # Store category name as a string
-    created_at = DateTimeField(default=datetime.datetime.utcnow)  # <-- Add this line
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    times_visited = DictField(default=lambda: {'count': 0, 'last_decay': datetime.datetime.utcnow()})  # Add visit tracking with decay
+    last_visited = DateTimeField()  # Track when it was last visited
 
     meta = {
         'collection': 'subjects',
         'indexes': [
-            {'fields': ['name', 'owner'], 'unique': True}
+            {'fields': ['name', 'owner'], 'unique': True},
+            {'fields': ['owner', '-times_visited.count']},  # Index for efficient sorting by visit count
         ]
     }
 
 
 # Subject class helper to interact with the database
 class Subject:
-    def __init__(self, name, owner, template="", components=None, widgets=None, id=None, is_deletable=True, category=None, created_at=None):
+    def __init__(self, name, owner, template="", components=None, widgets=None, id=None, is_deletable=True, category=None, created_at=None, times_visited=None, last_visited=None):
         self.id = id or str(uuid.uuid4())
         self.name = name
         self.owner = owner
@@ -39,8 +42,43 @@ class Subject:
         self.components = components or []
         self.widgets = widgets or []
         self.is_deletable = is_deletable
-        self.category = category or "Uncategorized"  # Default to "Uncategorized"
-        self.created_at = created_at or datetime.datetime.utcnow()  # <-- Add this line
+        self.category = category or "Uncategorized"
+        self.created_at = created_at or datetime.datetime.utcnow()
+        self.times_visited = times_visited or {'count': 0, 'last_decay': datetime.datetime.utcnow()}
+        self.last_visited = last_visited
+
+    def increment_visit_count(self):
+        """
+        Increment visit count with decay mechanism to prevent overflow.
+        Applies exponential decay based on time elapsed since last decay.
+        """
+        now = datetime.datetime.utcnow()
+        
+        # Initialize if needed
+        if not isinstance(self.times_visited, dict):
+            self.times_visited = {'count': 0, 'last_decay': now}
+        
+        if 'last_decay' not in self.times_visited:
+            self.times_visited['last_decay'] = now
+        
+        last_decay = self.times_visited['last_decay']
+        if not isinstance(last_decay, datetime.datetime):
+            last_decay = datetime.datetime.utcnow()
+            self.times_visited['last_decay'] = last_decay
+        
+        # Calculate days since last decay
+        days_since_decay = (now - last_decay).days
+        
+        # Apply decay if more than 7 days have passed
+        if days_since_decay >= 7:
+            # Exponential decay: reduce count by 10% per week
+            decay_factor = 0.9 ** (days_since_decay // 7)
+            self.times_visited['count'] = int(self.times_visited['count'] * decay_factor)
+            self.times_visited['last_decay'] = now
+        
+        # Increment visit count (with maximum cap of 10000)
+        self.times_visited['count'] = min(self.times_visited['count'] + 1, 10000)
+        self.last_visited = now
 
     async def add_component(self, component_name, component_type, data=None, is_deletable=True):
         if component_type in PREDEFINED_COMPONENT_TYPES:
@@ -87,6 +125,10 @@ class Subject:
             )
 
             widget.save_to_db()
+            
+            # Create associated arrays for widget types that need them
+            await self._create_widget_arrays(widget, widget_type)
+            
             # Add reference to the widget in the subject
             self.widgets.append(widget.id)
             self.save_to_db()
@@ -94,6 +136,58 @@ class Subject:
         except ValidationError as e:
             print(f"Widget validation error: {e}")
             return None
+
+    async def _create_widget_arrays(self, widget, widget_type):
+        """Create array components for widgets that need them."""
+        from .arrayItem import Arrays
+        
+        if widget_type == "table":
+            # Create columns array
+            columns_result = Arrays.create_array(
+                user_id=self.owner,
+                host_id=widget.id,
+                array_name=f"{widget.name}_columns",
+                host_type="widget",
+                initial_elements=[]
+            )
+            if not columns_result["success"]:
+                raise Exception(f"Failed to create columns array: {columns_result['message']}")
+            
+            # Create rows array
+            rows_result = Arrays.create_array(
+                user_id=self.owner,
+                host_id=widget.id,
+                array_name=f"{widget.name}_rows",
+                host_type="widget",
+                initial_elements=[]
+            )
+            if not rows_result["success"]:
+                raise Exception(f"Failed to create rows array: {rows_result['message']}")
+                
+        elif widget_type == "calendar":
+            # Create events array
+            events_result = Arrays.create_array(
+                user_id=self.owner,
+                host_id=widget.id,
+                array_name=f"{widget.name}_events",
+                host_type="widget",
+                initial_elements=[]
+            )
+            if not events_result["success"]:
+                raise Exception(f"Failed to create events array: {events_result['message']}")
+                
+        elif widget_type == "note":
+            # Create tags array
+            tags_result = Arrays.create_array(
+                user_id=self.owner,
+                host_id=widget.id,
+                array_name=f"{widget.name}_tags",
+                host_type="widget",
+                initial_elements=[]
+            )
+            if not tags_result["success"]:
+                raise Exception(f"Failed to create tags array: {tags_result['message']}")
+                
 
     def get_component(self, comp_id):
         return self.components.get(comp_id)
@@ -115,7 +209,9 @@ class Subject:
             "widgets": self.widgets,
             "is_deletable": self.is_deletable,
             "owner": self.owner,
-            "created_at": self.created_at.isoformat() if self.created_at else None,  # <-- Add this line
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "times_visited": self.times_visited.get('count', 0) if isinstance(self.times_visited, dict) else 0,
+            "last_visited": self.last_visited.isoformat() if self.last_visited else None,
         }
 
     async def apply_template(self, template):
@@ -217,7 +313,9 @@ class Subject:
             widgets=self.widgets,
             is_deletable=self.is_deletable,
             category=self.category,
-            created_at=self.created_at,  # <-- Add this line
+            created_at=self.created_at,
+            times_visited=self.times_visited,
+            last_visited=self.last_visited,
         )
         subject_db.save()
 
@@ -231,12 +329,13 @@ class Subject:
                     name=subject_db.name,
                     owner=subject_db.owner,
                     template=subject_db.template,
-                    components=[
-                        component.id for component in subject_db.components],
+                    components=[component.id for component in subject_db.components],
                     widgets=[widget.id for widget in subject_db.widgets],
                     is_deletable=subject_db.is_deletable,
                     category=subject_db.category,
-                    created_at=subject_db.created_at,  # <-- Add this line
+                    created_at=subject_db.created_at,
+                    times_visited=subject_db.times_visited,
+                    last_visited=subject_db.last_visited,
                 )
                 return subject
             else:
@@ -260,4 +359,6 @@ class Subject:
             is_deletable=subject_db.is_deletable,
             category=subject_db.category,
             created_at=subject_db.created_at,
+            times_visited=subject_db.times_visited,
+            last_visited=subject_db.last_visited,
         )

@@ -2,14 +2,12 @@ import ollama
 from functools import lru_cache
 from fastapi import FastAPI, HTTPException
 from pymilvus import MilvusClient
-from mongoengine import connect, Document, StringField
-from pydantic import BaseModel
+from mongoengine import connect
 import requests
 import json
 from dotenv import load_dotenv
 import os
-from mongoengine import DateTimeField
-from models import AIMessage_db ,User, Subject_db,  ChatRequest
+from models import AIMessage_db ,User, Subject_db, ChatRequest
 import re
 from typing import List, Dict, Any
 from consts import available_functions
@@ -731,6 +729,82 @@ async def ask_ai(
         "- Custom templates: Created by users, reusable across subjects\n"
         "- Templates define complete subject structure with components and widgets\n\n"
     )
+    instructions += (
+        
+        "**HABIT TRACKER SYSTEM:**\n"
+        "The system includes a special Habit Tracker that manages user habits:\n\n"
+        
+        "**Habit Tracker Structure:**\n"
+        "- Template: 'habit_tracker' (automatically created for each user)\n"
+        "- Components:\n"
+        "  • habits: Array_type containing subject IDs of habit subjects\n"
+        "  • daily_status: Array_of_pairs with habit_id:completion_status for today\n"
+        "  • current_date: Current date string\n"
+        "  • last_updated: Last update timestamp\n\n"
+        
+        "**Habit Subjects:**\n"
+        "- Individual habits are created as subjects with template 'habit'\n"
+        "- Each habit has: Description, Frequency, Start Date, End Date\n"
+        "- Habit subjects are referenced by ID in the tracker's habits array\n\n"
+        
+        "**CRITICAL HABIT TRACKER RULES:**\n"
+        "1. **NEVER directly modify the habit tracker arrays using data transfers**\n"
+        "2. **ALWAYS use the dedicated habit functions for habit operations**\n"
+        "3. **The habits array only contains subject IDs, not habit names or data**\n"
+        "4. **Only subjects with template 'habit' can be added to the tracker**\n\n"
+        
+        "**Habit Management Functions:**\n"
+        "Use these specific functions for habit operations:\n\n"
+        
+        "- **create_habit**: Create a new habit and optionally add to tracker\n"
+        "  • Creates a subject with 'habit' template\n"
+        "  • Automatically adds to tracker unless add_to_tracker=false\n"
+        "  • Example: User says 'I want to track drinking water daily'\n"
+        "    → create_habit(name='Drink Water', frequency='Daily')\n\n"
+        
+        "- **add_habit_to_tracker**: Add existing habit subject to tracker\n"
+        "  • Only works with subjects that have 'habit' template\n"
+        "  • Use when user wants to track an existing habit subject\n\n"
+        
+        "- **remove_habit_from_tracker**: Remove habit from tracker\n"
+        "  • Removes from tracking but keeps the habit subject\n"
+        "  • Use when user wants to stop tracking a habit\n\n"
+        
+        "- **mark_habit_complete**: Mark habit as done/undone for today\n"
+        "  • Updates daily completion status\n"
+        "  • Example: User says 'I completed my morning workout'\n"
+        "    → mark_habit_complete(habit_id='123', completed=true)\n\n"
+        
+        "- **get_daily_habits_status**: Get all habits and their status\n"
+        "  • Shows completed and pending habits for a date\n"
+        "  • Use when user asks about their habit progress\n\n"
+        
+        "- **get_habit_tracker_data**: Get complete tracker data\n"
+        "  • Use when you need full habit tracker information\n\n"
+        
+        "**Common Habit Scenarios:**\n"
+        "1. **Creating habits**: 'I want to start exercising daily'\n"
+        "   → create_habit(name='Exercise', frequency='Daily')\n\n"
+        
+        "2. **Completing habits**: 'I finished my meditation today'\n"
+        "   → Find habit ID → mark_habit_complete(habit_id='xyz', completed=true)\n\n"
+        
+        "3. **Checking progress**: 'How are my habits today?'\n"
+        "   → get_daily_habits_status()\n\n"
+        
+        "4. **Stopping habit tracking**: 'I don't want to track reading anymore'\n"
+        "   → Find habit ID → remove_habit_from_tracker(habit_id='abc')\n\n"
+        
+        "**DO NOT DO:**\n"
+        "- Do NOT use create_data_transfer to modify habits array\n"
+        "- Do NOT use append/push operations on habit tracker components\n"
+        "- Do NOT manually modify daily_status array\n"
+        "- Do NOT create subjects with habit template without using create_habit\n\n"
+        
+        "**Financial Tracker vs Habit Tracker:**\n"
+        "- Financial Tracker: Use data transfers with 'amount;date' format\n"
+        "- Habit Tracker: Use dedicated habit functions only\n\n"
+    )
     
     instructions += (
         "Data Handling Priority (CRITICAL):\n"
@@ -917,7 +991,9 @@ async def ask_ai(
                     "create_custom_template", "add_todo_to_widget", "update_component_data",
                     "delete_subject", "delete_component", "delete_widget", "delete_connection",
                     "delete_category", "delete_data_transfer", "delete_custom_template",
-                    "delete_todo", "delete_notification", "remove_ai_accessible_subject"
+                    "delete_todo", "delete_notification", "remove_ai_accessible_subject",
+                    "create_habit", "add_habit_to_tracker", "remove_habit_from_tracker", 
+                    "mark_habit_complete"
                 ]
                 if function_name in data_changing_functions:
                     data_changed = True

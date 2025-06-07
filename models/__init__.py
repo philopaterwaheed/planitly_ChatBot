@@ -9,3 +9,5 @@ from .category import Category_db
 from .arrayItem import ArrayItem_db, Arrays
 from .templets import  CustomTemplate_db , TEMPLATES
 from .ai_message import AIMessage_db
+from .chatRequest import ChatRequest
+from .notifications import Notification_db, NotificationCount

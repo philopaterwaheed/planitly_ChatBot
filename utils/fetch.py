@@ -1,5 +1,5 @@
 from datetime import datetime
-from models import Subject_db, Connection_db, CustomTemplate_db, Category_db, User, Subject, Component, Widget_db
+from models import Subject_db, Connection_db, CustomTemplate_db, Category_db, User, Subject
 from bson import ObjectId
 
 def serialize_datetime(obj):

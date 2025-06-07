@@ -31,34 +31,6 @@ DEFAULT_USER_TEMPLATES = {
             {"name": "Profile Summary", "type": "text_field", "data": {"content": "Welcome to your profile!", "editable": False}},
         ]
     },
-    "settings": {
-        "name": "User Settings",
-        "is_deletable": False,
-        "category": "system",
-        "components": [
-            {
-                "name": "Theme",
-                "type": "str",
-                "data": {"item": "light"},
-                "is_deletable": False
-            },
-            {
-                "name": "Notifications",
-                "type": "bool",
-                "data": {"item": True},
-                "is_deletable": False
-            },
-            {
-                "name": "Privacy Level",
-                "type": "str",
-                "data": {"item": "standard"},
-                "is_deletable": False
-            }
-        ],
-        "widgets": [
-            {"name": "Settings Overview", "type": "note", "data": {"content": "Adjust your settings here.", "tags": [], "pinned": False}},
-        ]
-    },
     "habit_tracker": {
         "name": "Habit Tracker",
         "is_deletable": False,
@@ -67,7 +39,25 @@ DEFAULT_USER_TEMPLATES = {
             {
                 "name": "habits",
                 "type": "Array_type",
-                "data": {"type": "str"},  # Specify the type of items in the array
+                "data": {"type": "str"},  # Array of habit subject IDs
+                "is_deletable": False
+            },
+            {
+                "name": "daily_status",
+                "type": "Array_of_pairs",
+                "data": {"type": {"key": "str", "value": "bool"}},  # habit_id: completion_status
+                "is_deletable": False
+            },
+            {
+                "name": "current_date",
+                "type": "str",
+                "data": {"item": datetime.datetime.now().strftime("%Y-%m-%d")},
+                "is_deletable": False
+            },
+            {
+                "name": "last_updated",
+                "type": "date",
+                "data": {"item": datetime.datetime.now()},
                 "is_deletable": False
             }
         ],
@@ -99,16 +89,6 @@ DEFAULT_USER_TEMPLATES = {
                 "is_deletable": False
             }
         ],
-        "widgets": [
-            {
-                "name": "Expense Tracker",
-                "type": "table",
-                "data": {
-                    "columns": ["Date", "Category", "Amount"],
-                    "rows": []
-                }
-            },
-        ]
     }
 }
 
@@ -135,17 +115,6 @@ TEMPLATES = {
         "widgets": [
             {"name": "Contact Notes", "type": "note", "data": {"content": "", "tags": [], "pinned": False}},
             {"name": "Birthday Reminder", "type": "calendar", "data": {"events": [{"title": "Birthday", "date": datetime.datetime.now().strftime("%Y-%m-%d")}]}},
-        ],
-    },
-    "financial_tracker": {
-        "category": "Finance",  # Add category
-        "components": [
-            {"name": "Income", "type": "Array_type", "data": {"type": "int"}},  # Specify the type of items in the array
-            {"name": "Expenses", "type": "Array_type", "data": {"type": "int"}},  # Specify the type of items in the array
-            {"name": "Savings Goal", "type": "int", "data": {"item": 0}},
-        ],
-        "widgets": [
-            {"name": "Expense Tracker", "type": "table", "data": {"columns": ["Date", "Category", "Amount"], "rows": []}},
         ],
     },
 }
