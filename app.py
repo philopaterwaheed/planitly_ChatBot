@@ -351,16 +351,45 @@ def parse_function_calls(ai_response: str) -> List[Dict[str, Any]]:
     
     for match in matches:
         function_name = match[0].strip()
+        params_str = match[1].strip()
+        
         try:
-            parameters = json.loads(match[1])
+            # First attempt: direct JSON parsing
+            parameters = json.loads(params_str)
             function_calls.append({
                 "function_name": function_name,
                 "parameters": parameters
             })
             print(f"Parsed function call: {function_name} with parameters: {parameters}")
         except json.JSONDecodeError as e:
-            print(f"Error parsing function parameters: {e}")
-            continue
+            print(f"Initial JSON parsing failed: {e}")
+            try:
+                # Second attempt: fix single quotes to double quotes
+                # Replace single quotes with double quotes, but be careful with nested quotes
+                fixed_params = params_str.replace("'", '"')
+                parameters = json.loads(fixed_params)
+                function_calls.append({
+                    "function_name": function_name,
+                    "parameters": parameters
+                })
+                print(f"Parsed function call (after quote fix): {function_name} with parameters: {parameters}")
+            except json.JSONDecodeError as e2:
+                print(f"Error parsing function parameters after quote fix: {e2}")
+                print(f"Original parameters string: {params_str}")
+                print(f"Fixed parameters string: {fixed_params}")
+                
+                # Third attempt: use ast.literal_eval for Python-like syntax
+                try:
+                    import ast
+                    parameters = ast.literal_eval(params_str)
+                    function_calls.append({
+                        "function_name": function_name,
+                        "parameters": parameters
+                    })
+                    print(f"Parsed function call (using ast): {function_name} with parameters: {parameters}")
+                except Exception as e3:
+                    print(f"Error parsing with ast.literal_eval: {e3}")
+                    continue
     
     return function_calls
 
