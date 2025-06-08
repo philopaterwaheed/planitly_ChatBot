@@ -852,6 +852,38 @@ async def ask_ai(
 )
     instructions += (
         
+        "**ARRAY COMPONENT PERFORMANCE LIMITATIONS:**\n"
+        "When working with array-type components (Array_type, Array_generic, Array_of_strings, etc.), "
+        "you have access to only the first 100 positions/elements of each array for performance reasons.\n\n"
+        
+        "**Array Access Restrictions:**\n"
+        "- All Array_* components show maximum 100 elements in the data\n"
+        "- This includes: Array_type, Array_generic, Array_of_strings, Array_of_booleans, Array_of_dates, Array_of_objects, Array_of_pairs\n"
+        "- If an array has more than 100 elements, you can only see positions 0-99\n"
+        "- The actual array may contain more data, but it's not accessible for performance optimization\n\n"
+        
+        "**Implications for AI Operations:**\n"
+        "- When analyzing array data, inform users you can only see the first 100 items\n"
+        "- For large arrays, suggest the user view the complete data in the app interface\n"
+        "- When creating data transfers that target specific positions, ensure the position is within 0-99 range\n"
+        "- When describing array contents, clarify you're showing 'up to the first 100 items'\n\n"
+        
+        "**User Communication Examples:**\n"
+        "- 'I can see the first 100 items in your [component name] array...'\n"
+        "- 'Based on the first 100 entries I can access...'\n"
+        "- 'Your array contains many items (I can see the first 100)...'\n"
+        "- 'For a complete view of all items, please check your app interface'\n\n"
+        
+        "**Function Usage with Array Limits:**\n"
+        "- delete_at: Only use indices 0-99\n"
+        "- push_at: Only use indices 0-99\n"
+        "- update_at: Only use indices 0-99\n"
+        "- When working with Financial Tracker arrays, remember you only see first 100 income/expense entries\n\n"
+        
+        "**IMPORTANT**: Never attempt to access or reference array positions beyond index 99, as this data is not available to you.\n\n"
+    )
+    instructions += (
+        
         "**HABIT TRACKER SYSTEM:**\n"
         "The system includes a special Habit Tracker that manages user habits:\n\n"
         
