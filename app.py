@@ -730,6 +730,127 @@ async def ask_ai(
         "- Templates define complete subject structure with components and widgets\n\n"
     )
     instructions += (
+    "**CRITICAL ID HANDLING AND DATA STRUCTURE RULES:**\n\n"
+    
+    "**1. ID Usage in Function Calls:**\n"
+    "- ALWAYS use IDs (not names) in function parameters that require an ID\n"
+    "- NEVER use names in place of ID parameters\n"
+    "- ALL required IDs are provided in the current system data above\n"
+    "- If an ID is not found in the provided data, the item doesn't exist or isn't accessible\n\n"
+    
+    "**2. System Data Structure Understanding:**\n"
+    "Every subject in your ai_accessible_subjects follows this exact structure:\n"
+    "```\n"
+    "{\n"
+    "  \"subject\": {\n"
+    "    \"id\": \"unique-subject-id\",\n"
+    "    \"name\": \"Subject Name\",\n"
+    "    \"components\": [\"component-id-1\", \"component-id-2\", ...],  // Array of component IDs\n"
+    "    \"widgets\": [\"widget-id-1\", \"widget-id-2\", ...],         // Array of widget IDs\n"
+    "    \"template\": \"template_name\",\n"
+    "    \"category\": \"Category Name\",\n"
+    "    \"owner\": \"user-id\",\n"
+    "    \"created_at\": \"ISO-date\",\n"
+    "    \"is_deletable\": boolean\n"
+    "  },\n"
+    "  \"components\": [\n"
+    "    {\n"
+    "      \"id\": \"component-id-1\",           // This ID must match one in subject.components array\n"
+    "      \"name\": \"Component Name\",\n"
+    "      \"comp_type\": \"int|str|bool|Array_of_pairs|etc\",\n"
+    "      \"data\": { /* component-specific data structure */ },\n"
+    "      \"host_subject\": \"subject-id\",     // References the parent subject\n"
+    "      \"owner\": \"user-id\",\n"
+    "      \"is_deletable\": boolean\n"
+    "    }\n"
+    "  ],\n"
+    "  \"widgets\": [\n"
+    "    {\n"
+    "      \"_id\": \"widget-id-1\",             // This ID must match one in subject.widgets array\n"
+    "      \"name\": \"Widget Name\",\n"
+    "      \"widget_type\": \"daily_todo|table|note|etc\",\n"
+    "      \"data\": { /* widget-specific data structure */ },\n"
+    "      \"host_subject\": \"subject-id\",     // References the parent subject\n"
+    "      \"owner\": \"user-id\",\n"
+    "      \"is_deletable\": boolean\n"
+    "    }\n"
+    "  ]\n"
+    "}\n"
+    "```\n\n"
+    
+    "**3. ID Resolution Process:**\n"
+    "When user mentions an item by name, follow this exact process:\n\n"
+    "**For Subjects:**\n"
+    "1. Search through ai_accessible_subjects for subject.name matching user's reference\n"
+    "2. Use the subject.id for function calls requiring subject_id\n"
+    "3. Example: User says 'Financial Tracker' → Find subject with name='Financial Tracker' → Use its id\n\n"
+    
+    "**For Components:**\n"
+    "1. Identify which subject contains the component (user context or explicit mention)\n"
+    "2. Look in that subject's components array for the component IDs\n"
+    "3. Find the matching component in the components data list by ID\n"
+    "4. Verify the component.id exists in the subject.components array\n"
+    "5. Use the component.id for function calls requiring component_id\n"
+    "6. Example Process:\n"
+    "   - User: 'Update income in my financial tracker'\n"
+    "   - Step 1: Find 'Financial Tracker' subject → ID: '0c16c131-0489-4ea3-ba1f-8c920a12780b'\n"
+    "   - Step 2: Check subject.components: ['2841d5bf-92c6-46f9-a1a0-d08d98dade59', '7b83a154-c44f-4f47-a3be-cb3239c8f262', 'b5aaeea3-bf54-4567-9a86-e38b1338446e']\n"
+    "   - Step 3: Find component with name='Income' in components list → ID: '2841d5bf-92c6-46f9-a1a0-d08d98dade59'\n"
+    "   - Step 4: Verify '2841d5bf-92c6-46f9-a1a0-d08d98dade59' exists in subject.components ✓\n"
+    "   - Step 5: Use '2841d5bf-92c6-46f9-a1a0-d08d98dade59' as target_component_id\n\n"
+    
+    "**For Widgets:**\n"
+    "1. Identify which subject contains the widget\n"
+    "2. Look in that subject's widgets array for the widget IDs\n"
+    "3. Find the matching widget in the widgets data list by ID (note: widgets use '_id' field)\n"
+    "4. Verify the widget._id exists in the subject.widgets array\n"
+    "5. Use the widget._id for function calls requiring widget_id\n\n"
+    
+    "**4. Data Structure Validation Rules:**\n"
+    "Before using any ID in a function call:\n"
+    "- Subject ID: Must exist in ai_accessible_subjects list\n"
+    "- Component ID: Must exist in both the subject.components array AND the components data list\n"
+    "- Widget ID: Must exist in both the subject.widgets array AND the widgets data list\n"
+    "- The ID in the data object must match the ID in the subject's reference array\n\n"
+    
+    "**5. Error Handling for Missing IDs:**\n"
+    "If you cannot find the required ID:\n"
+    "- 'I cannot find that subject in your accessible subjects list.'\n"
+    "- 'I cannot find that component in the [subject name] subject.'\n"
+    "- 'I cannot find that widget in the [subject name] subject.'\n"
+    "- 'That item is not accessible to me or doesn't exist.'\n\n"
+    
+    "**6. Real Example from Your Data:**\n"
+    "Subject: Financial Tracker (ID: '0c16c131-0489-4ea3-ba1f-8c920a12780b')\n"
+    "- Components array: ['2841d5bf-92c6-46f9-a1a0-d08d98dade59', '7b83a154-c44f-4f47-a3be-cb3239c8f262', 'b5aaeea3-bf54-4567-9a86-e38b1338446e']\n"
+    "- Components data:\n"
+    "  • Income (ID: '2841d5bf-92c6-46f9-a1a0-d08d98dade59') ✓ matches components[0]\n"
+    "  • Expenses (ID: '7b83a154-c44f-4f47-a3be-cb3239c8f262') ✓ matches components[1]\n"
+    "  • Savings Goal (ID: 'b5aaeea3-bf54-4567-9a86-e38b1338446e') ✓ matches components[2]\n"
+    "- Widgets array: ['eabe9ab0-5a39-4fae-88b5-f7305cca0ed0']\n"
+    "- Widgets data:\n"
+    "  • Expense Tracker (ID: 'eabe9ab0-5a39-4fae-88b5-f7305cca0ed0') ✓ matches widgets[0]\n\n"
+    
+    "**7. Function Call Examples with Correct IDs:**\n"
+    "WRONG: create_data_transfer(target_component_id='Income', ...)\n"
+    "CORRECT: create_data_transfer(target_component_id='2841d5bf-92c6-46f9-a1a0-d08d98dade59', ...)\n\n"
+    
+    "WRONG: add_component_to_subject(subject_id='Financial Tracker', ...)\n"
+    "CORRECT: add_component_to_subject(subject_id='0c16c131-0489-4ea3-ba1f-8c920a12780b', ...)\n\n"
+    
+    "WRONG: add_todo_to_widget(widget_id='Expense Tracker', ...)\n"
+    "CORRECT: add_todo_to_widget(widget_id='eabe9ab0-5a39-4fae-88b5-f7305cca0ed0', ...)\n\n"
+    
+    "**8. ID Cross-Reference Verification:**\n"
+    "Always verify ID consistency:\n"
+    "- If component.host_subject doesn't match the parent subject.id → Data inconsistency error\n"
+    "- If component.id is not in subject.components array → Data inconsistency error\n"
+    "- If widget._id is not in subject.widgets array → Data inconsistency error\n\n"
+    
+    "**REMEMBER: IDs are NEVER shown to users - they are internal system identifiers. "
+    "Users work with names, you work with IDs behind the scenes.**\n\n"
+)
+    instructions += (
         
         "**HABIT TRACKER SYSTEM:**\n"
         "The system includes a special Habit Tracker that manages user habits:\n\n"
@@ -1144,6 +1265,7 @@ async def ask_ai(
     ai_response_clean = re.sub(r"<<FUNCTION_CALL:\s*.*?\s*\|\s*parameters:\s*{.*?}>>", "", ai_response_clean, flags=re.DOTALL | re.IGNORECASE)
     ai_response_clean = ai_response_clean.strip()
     
+    save_message(message, ai_response, str(user.id))
     return {
         "message": ai_response_clean,
         "function_results": function_results,
