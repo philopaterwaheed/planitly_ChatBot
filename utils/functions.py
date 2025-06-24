@@ -736,6 +736,38 @@ async def execute_function_call(function_name: str, arguments: dict, user: User)
                 "message": "Habit tracker data retrieved successfully"
             }
         
+        elif function_name == "get_habit_detailed_status":
+            habit_id = arguments.get("habit_id")
+            date = arguments.get("date")
+            
+            if not habit_id:
+                return {"success": False, "message": "Habit ID is required"}
+            
+            # Use current date if not provided
+            if not date:
+                date = datetime.now().strftime("%Y-%m-%d")
+            
+            try:
+                result = await HabitTrackerManager.get_habit_detailed_status(str(user.id), habit_id, date)
+                return {
+                    "success": True,
+                    "data": result,
+                    "message": f"Retrieved detailed status for habit on {date}"
+                }
+            except Exception as e:
+                return {"success": False, "message": f"Error getting habit details: {str(e)}"}
+        
+        elif function_name == "get_habits_count":
+            try:
+                count = await HabitTrackerManager.get_habits_count(str(user.id))
+                return {
+                    "success": True,
+                    "count": count,
+                    "message": f"You have {count} habits in your tracker"
+                }
+            except Exception as e:
+                return {"success": False, "message": f"Error getting habits count: {str(e)}"}
+        
         else:
             return {"success": False, "message": f"Unknown function: {function_name}"}
     

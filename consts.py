@@ -211,5 +211,18 @@ available_functions=[
                 "name": "get_habit_tracker_data",
                 "description": "Get complete habit tracker data including all habits and their status",
                 "parameters": {}
+            },
+            {
+                "name": "get_habit_detailed_status",
+                "description": "Get detailed status information for a specific habit including todos and completion percentages",
+                "parameters": {
+                    "habit_id": "ID of the habit subject (required)",
+                    "date": "Date in YYYY-MM-DD format (optional, defaults to today)"
+                }
+            },
+            {
+                "name": "get_habits_count",
+                "description": "Get the total count of habits in the tracker efficiently without loading all data",
+                "parameters": {}
             }
         ]

@@ -13,7 +13,7 @@ from typing import List, Dict, Any
 from consts import available_functions
 from utils.fetch import fetch
 from utils.functions import execute_function_call
-
+from instructions import habit_tracker_instructions
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
@@ -960,127 +960,8 @@ async def ask_ai(
         
         "**IMPORTANT**: Never attempt to access or reference array positions beyond index 99, as this data is not available to you.\n\n"
     )
-    instructions += (
-        
-        "**HABIT TRACKER SYSTEM:**\n"
-        "The system includes a special Habit Tracker that manages user habits:\n\n"
-        
-        "**CRITICAL ACCESS CONTROL RULES:**\n"
-        "- Habit Tracker is a SUBJECT like any other subject in the system\n"
-        "- Individual habit subjects are also SUBJECTS like any other subjects\n"
-        "- **YOU CAN ONLY ACCESS HABIT TRACKER IF IT'S IN AI-ACCESSIBLE SUBJECTS LIST**\n"
-        "- **YOU CAN ONLY ACCESS HABIT SUBJECTS IF THEY'RE IN AI-ACCESSIBLE SUBJECTS LIST**\n"
-        "- **NEVER assume you can access habit tracker or habit subjects automatically**\n"
-        "- **CHECK the ai_accessible_subjects list before attempting any habit operations**\n"
-        "- If habit tracker is not accessible, inform user they need to grant access first\n\n"
-        
-        "**Access Check Before Habit Operations:**\n"
-        "Before using ANY habit function, you MUST:\n"
-        "1. Check if 'Habit Tracker' subject is in the ai_accessible_subjects list\n"
-        "2. For habit-specific operations, check if the individual habit subject is accessible\n"
-        "3. If not accessible, respond: 'I cannot access your habit tracker. Please grant me access to it first.'\n"
-        "4. Do NOT attempt to create, modify, or read habit data without proper access\n\n"
-        
-        "**Habit Tracker Structure:**\n"
-        "- Template: 'habit_tracker' (automatically created for each user)\n"
-        "- Components:\n"
-        "  • habits: Array_type containing subject IDs of habit subjects\n"
-        "  • daily_status: Array_of_pairs with habit_id:completion_status for today\n"
-        "  • current_date: Current date string\n"
-        "  • last_updated: Last update timestamp\n\n"
-        
-        "**Habit Subjects:**\n"
-        "- Individual habits are created as subjects with template 'habit'\n"
-        "- Each habit has: Description, Frequency, Start Date, End Date\n"
-        "- Habit subjects are referenced by ID in the tracker's habits array\n\n"
-        
-        "**HABIT OPERATION RULES:**\n"
-        "1. **ACCESS FIRST**: Always verify access before any habit operations\n"
-        "2. **NEVER directly modify the habit tracker arrays using data transfers**\n"
-        "3. **ALWAYS use the dedicated habit functions for habit operations**\n"
-        "4. **The habits array only contains subject IDs, not habit names or data**\n"
-        "5. **Only subjects with template 'habit' can be added to the tracker**\n\n"
-        
-        "**Habit Management Functions (USE ONLY IF ACCESS IS GRANTED):**\n"
-        "Use these specific functions for habit operations AFTER confirming access:\n\n"
-        
-        "- **create_habit**: Create a new habit and optionally add to tracker\n"
-        "  • REQUIRES: Habit Tracker to be accessible (for adding to tracker)\n"
-        "  • Creates a subject with 'habit' template\n"
-        "  • Automatically adds to tracker unless add_to_tracker=false\n"
-        "  • Example: User says 'I want to track drinking water daily'\n"
-        "    → Check access first → create_habit(name='Drink Water', frequency='Daily')\n\n"
-        
-        "- **add_habit_to_tracker**: Add existing habit subject to tracker\n"
-        "  • REQUIRES: Both Habit Tracker AND the specific habit subject to be accessible\n"
-        "  • Only works with subjects that have 'habit' template\n"
-        "  • Use when user wants to track an existing habit subject\n\n"
-        
-        "- **remove_habit_from_tracker**: Remove habit from tracker\n"
-        "  • REQUIRES: Habit Tracker to be accessible\n"
-        "  • Removes from tracking but keeps the habit subject\n"
-        "  • Use when user wants to stop tracking a habit\n\n"
-        
-        "- **mark_habit_complete**: Mark habit as done/undone for today\n"
-        "  • REQUIRES: Habit Tracker to be accessible\n"
-        "  • Updates daily completion status\n"
-        "  • Example: User says 'I completed my morning workout'\n"
-        "    → Check access → mark_habit_complete(habit_id='123', completed=true)\n\n"
-        
-        "- **get_daily_habits_status**: Get all habits and their status\n"
-        "  • REQUIRES: Habit Tracker to be accessible\n"
-        "  • Shows completed and pending habits for a date\n"
-        "  • Use when user asks about their habit progress\n\n"
-        
-        "- **get_habit_tracker_data**: Get complete tracker data\n"
-        "  • REQUIRES: Habit Tracker to be accessible\n"
-        "  • Use when you need full habit tracker information\n\n"
-        
-        "**Common Habit Scenarios WITH ACCESS CONTROL:**\n"
-        "1. **User asks about habits**: 'How are my habits today?'\n"
-        "   → Check if 'Habit Tracker' is in ai_accessible_subjects\n"
-        "   → If YES: get_daily_habits_status()\n"
-        "   → If NO: 'I cannot access your habit tracker. Please grant me access first.'\n\n"
-        
-        "2. **Creating habits**: 'I want to start exercising daily'\n"
-        "   → Check if 'Habit Tracker' is accessible (if user wants tracking)\n"
-        "   → If YES: create_habit(name='Exercise', frequency='Daily')\n"
-        "   → If NO: 'I can create the habit subject, but cannot add it to your tracker without access.'\n\n"
-        
-        "3. **Completing habits**: 'I finished my meditation today'\n"
-        "   → Check if 'Habit Tracker' is accessible\n"
-        "   → If YES: Find habit ID → mark_habit_complete(habit_id='xyz', completed=true)\n"
-        "   → If NO: 'I cannot access your habit tracker to mark habits complete.'\n\n"
-        
-        "4. **Viewing habit data**: 'Show me my workout habit details'\n"
-        "   → Check if specific habit subject is in ai_accessible_subjects\n"
-        "   → If YES: Use the subject data from ai_accessible_subjects\n"
-        "   → If NO: 'I cannot access that habit subject. Please grant me access first.'\n\n"
-        
-        "**ACCESS DENIAL RESPONSES:**\n"
-        "When habit tracker or habit subjects are not accessible, use these responses:\n"
-        "- 'I cannot access your habit tracker. Please grant me access to it first.'\n"
-        "- 'I cannot access that habit subject. Please grant me access first.'\n"
-        "- 'Your habit tracker is not in my accessible subjects list.'\n"
-        "- 'I can create habit subjects, but cannot add them to your tracker without access.'\n\n"
-        
-        "**DO NOT DO:**\n"
-        "- Do NOT attempt habit operations without verifying access first\n"
-        "- Do NOT assume habit tracker is always accessible\n"
-        "- Do NOT use create_data_transfer to modify habits array\n"
-        "- Do NOT use append/push operations on habit tracker components\n"
-        "- Do NOT manually modify daily_status array\n"
-        "- Do NOT access habit data that's not in ai_accessible_subjects\n\n"
-        
-        "**VERIFICATION PROCESS:**\n"
-        "Before ANY habit-related response:\n"
-        "1. Check if 'Habit Tracker' subject is in the ai_accessible_subjects list above\n"
-        "2. For specific habit operations, check if the individual habit subject is accessible\n"
-        "3. If not accessible, politely inform user about access requirements\n"
-        "4. Only proceed with habit functions if proper access is confirmed\n\n"
-        
-        "**Remember**: Habit Tracker and habit subjects are NOT special - they follow the same access control rules as all other subjects in the system.\n\n"
-    )
+
+    instructions += habit_tracker_instructions
     
     # memery and conflict resolution system instructions
     instructions += (
@@ -1375,7 +1256,7 @@ async def ask_ai(
     ai_response_clean = re.sub(r"<<FUNCTION_CALL:\s*.*?\s*\|\s*parameters:\s*{.*?}>>", "", ai_response_clean, flags=re.DOTALL | re.IGNORECASE)
     ai_response_clean = ai_response_clean.strip()
     
-    save_message(message, ai_response, str(user.id))
+    save_message(message, ai_response_clean, str(user.id))
     return {
         "message": ai_response_clean,
         "function_results": function_results,

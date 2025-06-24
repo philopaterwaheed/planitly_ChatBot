@@ -1,5 +1,6 @@
 from mongoengine import Document, StringField, EmailField, BooleanField, DateTimeField, IntField, ListField , DictField
 import datetime
+import re
 
 
 class User(Document):
@@ -14,8 +15,9 @@ class User(Document):
     last_reset = DateTimeField(default=datetime.datetime.utcnow)  
     firstname = StringField(required=True)
     lastname = StringField(required=True)
-    phone_number = StringField(required=True)
+    phone_number = DictField(default=lambda: {"country_code": "", "number": ""})
     birthday = DateTimeField(required=True)
+    profile_image = StringField(required=False)  # Cloudinary URL for profile image
     default_subjects = DictField(default={})
     settings = DictField(default=lambda: {"ai_accessible": []})
 
